@@ -7,7 +7,7 @@ import uvicorn
 import traceback
 
 from app.api import (
-    events, alerts, detections
+    events, alerts, detections, websocket, incidents, stats, health
 )
 from app.db.session import engine, get_db
 from app.models.database import Base
@@ -65,7 +65,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ===== REGISTER ROUTERS =====
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
-
+app.include_router(detections.router, prefix="/api/v1/detections", tags=["detections"])
+app.include_router(websocket.router, prefix="/api/v1/ws", tags=["websocket"])
+app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["incidents"])
+app.include_router(stats.router, prefix="/api/v1/stats", tags=["stats"])
+app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
 
 @app.get("/")
 async def root():
