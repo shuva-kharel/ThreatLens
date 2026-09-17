@@ -4,6 +4,7 @@ from sqlalchemy import func
 from app.db.session import get_db
 from app.models.database import Alert, Incident
 from typing import Optional
+from app.core.time import utc_iso
 
 router = APIRouter()
 
@@ -124,7 +125,7 @@ async def get_technique(technique_id: str, db: Session = Depends(get_db)):
                 "severity": a.severity,
                 "source_ip": a.source_ip,
                 "target_host": a.target_host,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "created_at": utc_iso(a.created_at),
             }
             for a in alerts
         ],
@@ -208,7 +209,7 @@ async def get_technique_alerts(
                 "target_host": a.target_host,
                 "description": a.description,
                 "confidence": a.confidence,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "created_at": utc_iso(a.created_at),
             }
             for a in alerts
         ],

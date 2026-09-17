@@ -1,7 +1,8 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
-from dotenv import load_dotenv
 import os
+from typing import Optional
+
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 
 # Load .env file explicitly
 load_dotenv()
@@ -22,6 +23,22 @@ class Settings(BaseSettings):
     # Inactivity gap threshold (seconds) before starting a new incident for the same source/target
     incident_correlation_window_seconds: int = int(os.getenv("INCIDENT_CORRELATION_WINDOW_SECONDS", "300"))
 
+    # ===== Automated Response Orchestration =====
+    automatic_response_enabled: bool = os.getenv(
+        "AUTOMATIC_RESPONSE_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+    automatic_response_dry_run: bool = os.getenv(
+        "AUTOMATIC_RESPONSE_DRY_RUN", "true"
+    ).lower() in {"1", "true", "yes", "on"}
+    response_pipeline_version: str = os.getenv(
+        "RESPONSE_PIPELINE_VERSION", "v1"
+    )
+    slack_notifications_enabled: bool = os.getenv(
+        "SLACK_NOTIFICATIONS_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
+    slack_webhook_url: Optional[str] = os.getenv("SLACK_WEBHOOK_URL") or None
+    frontend_base_url: Optional[str] = os.getenv("FRONTEND_BASE_URL") or None
+
     # ===== Groq (Primary - FASTEST) =====
     groq_api_key: Optional[str] = os.getenv("GROQ_API_KEY")
     groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
@@ -41,26 +58,3 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
-
-# ===== Debug Output (shows what's loaded) =====
-try:
-    print("=" * 50)
-    print("[CONFIG] CONFIGURATION LOADED")
-    print("=" * 50)
-    print(f"[*] GROQ:")
-    print(f"   API Key: {settings.groq_api_key[:15] if settings.groq_api_key else 'NOT SET'}...")
-    print(f"   Model: {settings.groq_model}")
-    print(f"   Base URL: {settings.groq_base_url}")
-    print()
-    print(f"[*] GEMINI:")
-    print(f"   API Key: {settings.gemini_api_key[:15] if settings.gemini_api_key else 'NOT SET'}...")
-    print(f"   Model: {settings.gemini_model}")
-    print(f"   Base URL: {settings.gemini_base_url}")
-    print()
-    print(f"[*] OPENROUTER:")
-    print(f"   API Key: {settings.openrouter_api_key[:15] if settings.openrouter_api_key else 'NOT SET'}...")
-    print(f"   Model: {settings.openrouter_model}")
-    print(f"   Base URL: {settings.openrouter_base_url}")
-    print("=" * 50)
-except Exception:
-    pass

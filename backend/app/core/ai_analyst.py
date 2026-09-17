@@ -167,13 +167,22 @@ class AIAnalyst:
             ]
 
         return AIAnalysisResponse(
+            incident_id=incident_data.get("id", "unknown"),
             summary=response["summary"],
-            attack_explanation=response["attack_explanation"],
-            evidence_list=response["evidence_list"],
-            attack_progression=response["attack_progression"],
-            mitre_explanation=response["mitre_explanation"],
-            investigation_steps=response["investigation_steps"],
-            containment_steps=response["containment_steps"]
+            attack_narrative=response["attack_explanation"],
+            confidence=float(incident_data.get("confidence") or 0.0),
+            findings=[
+                *response["evidence_list"],
+                *response["attack_progression"],
+                *([response["mitre_explanation"]] if response["mitre_explanation"] else []),
+            ],
+            recommendations=[
+                *response["investigation_steps"],
+                *response["containment_steps"],
+            ],
+            mitre_techniques=incident_data.get("mitre_techniques", []),
+            timeline=incident_data.get("attack_chain", []),
+            attack_graph={},
         )
 
     def _get_mock_response(self, incident_data: Dict[str, Any]) -> AIAnalysisResponse:
@@ -183,19 +192,20 @@ class AIAnalyst:
         print("[Mock] Generating mock response...")
 
         return AIAnalysisResponse(
+            incident_id=incident_data.get("id", "unknown"),
             summary=f"Potential attack detected from {source} targeting {target}.",
-            attack_explanation=f"Analysis shows suspicious activity originating from {source} against {target}. The pattern is consistent with a multi-stage attack.",
-            evidence_list=["Port scanning detected", "Multiple failed login attempts", "Successful authentication"],
-            attack_progression=["Reconnaissance", "Credential access", "Initial access"],
-            mitre_explanation="This attack pattern aligns with MITRE ATT&CK techniques including T1046 (Network Service Discovery) and T1110 (Brute Force).",
-            investigation_steps=[
+            attack_narrative=f"Analysis shows suspicious activity originating from {source} against {target}. The pattern is consistent with a multi-stage attack.",
+            confidence=float(incident_data.get("confidence") or 0.0),
+            findings=["Port scanning detected", "Multiple failed login attempts", "Successful authentication"],
+            recommendations=[
                 f"Review all activities from source {source}",
                 f"Check for successful privilege escalation on {target}",
-                "Review system logs for additional suspicious activities"
-            ],
-            containment_steps=[
+                "Review system logs for additional suspicious activities",
                 f"Consider blocking IP {source}",
                 f"Isolate host {target} for further investigation",
-                "Reset credentials for affected accounts"
-            ]
+                "Reset credentials for affected accounts",
+            ],
+            mitre_techniques=incident_data.get("mitre_techniques", []),
+            timeline=incident_data.get("attack_chain", []),
+            attack_graph={},
         )

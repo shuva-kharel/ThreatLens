@@ -10,6 +10,7 @@ import {
 import { api, type Scenario, type SimulationStatus } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { ErrorState } from '@/components/threatlens/ui'
+import { formatTime } from '@/components/threatlens/format'
 
 interface LogEntry {
   time: string
@@ -39,7 +40,7 @@ export default function SimulatorPage() {
   }, [])
 
   const addLog = (stage: string, message: string) => {
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false })
+    const time = formatTime(new Date().toISOString(), true)
     setLogs((prev) => [...prev, { time, stage, message }])
   }
 

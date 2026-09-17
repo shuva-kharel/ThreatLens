@@ -24,12 +24,13 @@ import {
   type ResponsePlaybook,
   type ResponsePolicy,
   type ResponseAuditEntry,
+  type Escalation,
 } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { EmptyState, ErrorState, LoadingState } from '@/components/threatlens/ui'
 import { formatDate, titleCase } from '@/components/threatlens/format'
 
-type TabType = 'executions' | 'playbooks' | 'policies' | 'audit'
+type TabType = 'escalations' | 'executions' | 'playbooks' | 'policies' | 'audit'
 
 export default function ResponseCenterPage() {
   const [activeTab, setActiveTab] = useState<TabType>('executions')
@@ -37,6 +38,7 @@ export default function ResponseCenterPage() {
   const [policies, setPolicies] = useState<ResponsePolicy[]>([])
   const [executions, setExecutions] = useState<ResponseExecutionRecord[]>([])
   const [auditLog, setAuditLog] = useState<ResponseAuditEntry[]>([])
+  const [escalations, setEscalations] = useState<Escalation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
@@ -53,12 +55,14 @@ export default function ResponseCenterPage() {
       api.responsePolicies(),
       api.responseExecutions(),
       api.responseAudit(),
+      api.responseEscalations(),
     ])
-      .then(([pb, pol, exec, aud]) => {
+      .then(([pb, pol, exec, aud, esc]) => {
         setPlaybooks(pb)
         setPolicies(pol)
         setExecutions(exec)
         setAuditLog(aud)
+        setEscalations(esc)
         if (pb.length > 0 && !selectedPlaybook) setSelectedPlaybook(pb[0])
         if (exec.length > 0 && !selectedExecution) setSelectedExecution(exec[0])
       })
@@ -161,6 +165,15 @@ export default function ResponseCenterPage() {
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-border mb-4">
         <button
+          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'escalations'
+            ? 'border-danger text-text'
+            : 'border-transparent text-muted hover:text-text'
+            }`}
+          onClick={() => setActiveTab('escalations')}
+        >
+          Human Escalations ({escalations.length})
+        </button>
+        <button
           className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'executions'
             ? 'border-accent text-text'
             : 'border-transparent text-muted hover:text-text'
@@ -200,6 +213,36 @@ export default function ResponseCenterPage() {
 
       {loading ? (
         <LoadingState label="Inspecting response subsystem..." />
+      ) : activeTab === 'escalations' ? (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Human Review Queue</h2>
+          </div>
+          {escalations.length === 0 ? (
+            <EmptyState title="No human escalations" description="Verified containment recurrences will appear here." />
+          ) : (
+            <div className="soc-table-wrap">
+              <table className="soc-table">
+                <thead><tr><th>Severity</th><th>Source</th><th>Target</th><th>Recurrences</th><th>Current Incident</th><th>Previous Response</th><th>Last Activity</th><th>Status</th><th>Assigned</th></tr></thead>
+                <tbody>
+                  {escalations.map((item) => (
+                    <tr key={item.id}>
+                      <td><span className="font-mono text-[11px]">{item.severity.toUpperCase()}</span></td>
+                      <td className="font-mono text-[11px]">{item.source_ip}</td>
+                      <td className="font-mono text-[11px]">{item.target ?? 'Unknown'}</td>
+                      <td className="font-mono text-[11px]">{item.recurrence_count}</td>
+                      <td><Link href={`/incidents/${item.current_incident_id}`} className="font-mono text-[11px] text-accent underline">{item.current_incident_id.slice(0, 8)}...</Link></td>
+                      <td className="font-mono text-[11px]">{titleCase(item.previous_action)}</td>
+                      <td className="font-mono text-[11px] text-muted">{formatDate(item.last_activity_at)}</td>
+                      <td><span className="font-mono text-[10px] text-danger">{item.status}</span></td>
+                      <td className="font-mono text-[11px]">{item.assigned_to ?? 'Unassigned'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       ) : activeTab === 'executions' ? (
         <div className="dashboard-grid">
           {/* Execution List */}
@@ -354,7 +397,7 @@ export default function ResponseCenterPage() {
                         {selectedExecution.verification_result.details}
                       </p>
                       <span className="text-faint text-[10.5px] font-mono block">
-                        Verified at: {selectedExecution.verification_result.timestamp}
+                        Verified at: {formatDate(selectedExecution.verification_result.timestamp)}
                       </span>
                     </div>
                   ) : (

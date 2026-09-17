@@ -1,576 +1,906 @@
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+
 from app.models.database import Incident, Alert, Event
+from app.core.time import ensure_utc, utc_iso
+
+
+UTC_MAX = datetime.max.replace(tzinfo=timezone.utc)
 
 
 class TraceAI:
-    """Reconstructs attack timelines, builds attack graphs, and identifies attack stages."""
+    """
+    Reconstructs an incident into a coherent attack narrative.
 
-    # Attack stage ordering (higher = later in kill chain)
-    STAGE_ORDER = {
-        "Unknown": 0,
-        "Reconnaissance": 1,
-        "Port Scanning": 1,
-        "Weaponization": 2,
-        "Credential Access": 2,
-        "SSH Brute Force": 2,
-        "Initial Access": 3,
-        "Successful Login": 3,
-        "Execution": 4,
-        "Command Execution": 4,
-        "Persistence": 5,
-        "Privilege Escalation": 5,
-        "Defense Evasion": 6,
-        "Credential Dumping": 6,
-        "Discovery": 7,
-        "Lateral Movement": 8,
-        "Collection": 9,
-        "Command & Control": 10,
-        "Exfiltration": 11,
-        "Impact": 12
-    }
+    Timestamp policy:
+    - Database timestamps are treated as UTC.
+    - Correlation, sorting, and duration calculations stay in UTC.
+    - Timestamps returned to API consumers are converted to Asia/Kathmandu.
+    """
 
-    # MITRE technique to kill chain stage
+    STAGE_ORDER = [
+        "Reconnaissance",
+        "Initial Access",
+        "Execution",
+        "Persistence",
+        "Privilege Escalation",
+        "Defense Evasion",
+        "Credential Access",
+        "Discovery",
+        "Lateral Movement",
+        "Collection",
+        "Command and Control",
+        "Exfiltration",
+        "Impact",
+        "Unknown",
+    ]
+
     MITRE_TO_STAGE = {
         "T1046": "Reconnaissance",
-        "T1595": "Reconnaissance",
         "T1110": "Credential Access",
         "T1078": "Initial Access",
-        "T1190": "Initial Access",
         "T1059": "Execution",
-        "T1053": "Persistence",
-        "T1548": "Privilege Escalation",
         "T1068": "Privilege Escalation",
-        "T1003": "Credential Dumping",
-        "T1087": "Discovery",
+        "T1548": "Privilege Escalation",
+        "T1003": "Credential Access",
         "T1021": "Lateral Movement",
-        "T1071": "Command & Control",
+        "T1071": "Command and Control",
+        "T1105": "Command and Control",
         "T1041": "Exfiltration",
-        "T1486": "Impact"
+        "T1486": "Impact",
     }
 
-    # Stage descriptions for timeline
     STAGE_DESCRIPTIONS = {
-        "Reconnaissance": "Attacker gathers information about the target",
-        "Credential Access": "Attacker attempts to obtain credentials",
-        "Initial Access": "Attacker gains first foothold in the environment",
-        "Execution": "Attacker executes malicious code",
-        "Persistence": "Attacker establishes persistence mechanisms",
-        "Privilege Escalation": "Attacker attempts to gain higher privileges",
-        "Defense Evasion": "Attacker attempts to avoid detection",
-        "Credential Dumping": "Attacker extracts credentials from the system",
-        "Discovery": "Attacker explores the environment",
-        "Lateral Movement": "Attacker moves to other systems",
-        "Collection": "Attacker collects data of interest",
-        "Command & Control": "Attacker communicates with compromised system",
-        "Exfiltration": "Attacker extracts data from the environment",
-        "Impact": "Attacker disrupts or destroys systems"
+        "Reconnaissance": "The attacker performed scanning or reconnaissance activity against the environment.",
+        "Initial Access": "The attacker obtained or attempted to obtain an initial foothold.",
+        "Execution": "Commands, scripts, or other executable activity was observed.",
+        "Persistence": "Activity indicating an attempt to maintain access was observed.",
+        "Privilege Escalation": "Activity indicating an attempt to obtain higher privileges was observed.",
+        "Defense Evasion": "Activity suggesting attempts to avoid or bypass security controls was observed.",
+        "Credential Access": "Activity targeting credentials or authentication mechanisms was observed.",
+        "Discovery": "The attacker appeared to gather information about the environment.",
+        "Lateral Movement": "Activity suggesting movement between systems was observed.",
+        "Collection": "The attacker appeared to gather data from the environment.",
+        "Command and Control": "Activity consistent with communication to an external controller was observed.",
+        "Exfiltration": "Activity suggesting data transfer out of the environment was observed.",
+        "Impact": "Activity indicating an attempt to disrupt, damage, or encrypt resources was observed.",
+        "Unknown": "The activity could not be mapped confidently to a specific attack stage.",
     }
 
     def __init__(self, db: Session):
         self.db = db
 
-    def reconstruct_incident(self, incident_id: str) -> Dict[str, Any]:
-        """Reconstruct the full attack timeline for an incident."""
-        incident = self.db.query(Incident).filter(Incident.id == incident_id).first()
+    # ------------------------------------------------------------------
+    # Timestamp helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> Optional[datetime]:
+        """
+        Convert a datetime or ISO timestamp into a timezone-aware UTC datetime.
+
+        Naive timestamps are treated as UTC because ThreatLens stores
+        database timestamps as UTC-naive values.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return ensure_utc(value)
+
+        if isinstance(value, str):
+            try:
+                return ensure_utc(datetime.fromisoformat(value))
+            except ValueError:
+                return None
+
+        return None
+
+    @staticmethod
+    def _sort_timestamp(value: Any) -> datetime:
+        parsed = TraceAI._parse_timestamp(value)
+        return parsed if parsed else UTC_MAX
+
+    # ------------------------------------------------------------------
+    # Main reconstruction
+    # ------------------------------------------------------------------
+
+    def reconstruct_incident(
+        self,
+        incident_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Reconstruct an incident into:
+        - timeline
+        - attack graph
+        - attack stages
+        - entities
+        - duration
+        - MITRE mapping
+        """
+
+        incident = (
+            self.db.query(Incident)
+            .filter(Incident.id == incident_id)
+            .first()
+        )
+
         if not incident:
-            return {"error": "Incident not found"}
+            return None
 
-        # Filter alerts belonging to incident within incident timeline
         alerts = self._get_incident_alerts(incident)
-
-        # Filter events belonging to incident strictly within incident timeline
         events = self._get_incident_events(incident, alerts)
 
-        # Sort by timestamp
-        events.sort(key=lambda e: e.timestamp or datetime.min)
-        alerts.sort(key=lambda a: a.created_at or datetime.min)
+        alerts = sorted(
+            alerts,
+            key=lambda a: self._sort_timestamp(a.created_at),
+        )
 
-        # Build components
+        events = sorted(
+            events,
+            key=lambda e: self._sort_timestamp(e.timestamp),
+        )
+
         timeline = self._build_timeline(events, alerts)
-        attack_graph = self._build_attack_graph(events, alerts, incident)
-        stages = self._identify_stages(events, alerts, incident)
-        entities = self._extract_entities(events, alerts, incident)
-
-        durations = self._calculate_durations(incident)
+        attack_graph = self._build_attack_graph(
+            incident,
+            events,
+            alerts,
+        )
+        stages = self._identify_stages(
+            incident,
+            events,
+            alerts,
+        )
+        entities = self._extract_entities(
+            incident,
+            events,
+            alerts,
+        )
+        duration = self._calculate_durations(
+            incident,
+            events,
+            alerts,
+        )
 
         return {
-            "incident_id": incident_id,
+            "incident_id": incident.id,
             "title": incident.title,
             "severity": incident.severity,
-            "status": incident.status,
             "confidence": incident.confidence,
-            "timeline": timeline,
-            "attack_graph": attack_graph,
-            "stages": stages,
-            "entities": entities,
+            "status": incident.status,
+
+            "first_seen": utc_iso(incident.first_seen),
+            "last_seen": utc_iso(incident.last_seen),
+
+            "duration_seconds": duration,
+
+            "source_entities": incident.source_entities or [],
+            "target_entities": incident.target_entities or [],
             "mitre_techniques": incident.mitre_techniques or [],
-            "event_count": len(events),
+
+            "entities": entities,
+            "timeline": timeline,
+            "stages": stages,
+            "attack_graph": attack_graph,
+
             "alert_count": len(alerts),
-            "first_seen": incident.first_seen.isoformat() if incident.first_seen else None,
-            "last_seen": incident.last_seen.isoformat() if incident.last_seen else None,
-            "duration_seconds": durations["duration_seconds"],
-            "duration_minutes": durations["duration_minutes"]
+            "event_count": len(events),
+
+            "attack_chain": incident.attack_chain or [],
         }
 
-    def _get_incident_alerts(self, incident: Incident) -> List[Alert]:
-        """Get all alerts for an incident strictly within its timeline."""
-        # Primary: Get alerts linked via incident_id
-        alerts = self.db.query(Alert).filter(
-            Alert.incident_id == incident.id
-        ).all()
+    # ------------------------------------------------------------------
+    # Data retrieval
+    # ------------------------------------------------------------------
 
-        # Fallback: Get alerts by matching source IP within incident timeline
-        if not alerts and incident.source_entities:
-            for source_ip in incident.source_entities:
-                query = self.db.query(Alert).filter(Alert.source_ip == source_ip)
-                if incident.first_seen:
-                    query = query.filter(Alert.created_at >= incident.first_seen)
-                if incident.last_seen:
-                    query = query.filter(Alert.created_at <= incident.last_seen)
-                fallback_alerts = query.all()
-                alerts.extend(fallback_alerts)
+    def _get_incident_alerts(
+        self,
+        incident: Incident,
+    ) -> List[Alert]:
+        """
+        Retrieve alerts directly associated with the incident.
 
-        # Enforce boundary: alert must be within [first_seen, last_seen] if set
-        filtered_alerts = []
-        for a in alerts:
-            if a.created_at:
-                if incident.first_seen and a.created_at < incident.first_seen:
-                    continue
-                if incident.last_seen and a.created_at > incident.last_seen:
-                    continue
-            filtered_alerts.append(a)
+        Falls back to source-IP/timeline correlation for older incidents
+        that may not have incident_id populated on their alerts.
+        """
 
-        return list({a.id: a for a in filtered_alerts}.values())
+        alerts = (
+            self.db.query(Alert)
+            .filter(Alert.incident_id == incident.id)
+            .all()
+        )
 
-    def _get_incident_events(self, incident: Incident, alerts: List[Alert]) -> List[Event]:
-        """Get all events related to an incident strictly within its timeline [first_seen, last_seen]."""
-        events = []
-        event_ids = set()
+        if alerts:
+            return alerts
 
-        # Primary: Get events via alert evidence
+        source_ips = incident.source_entities or []
+
+        if not source_ips:
+            return []
+
+        query = self.db.query(Alert).filter(
+            Alert.source_ip.in_(source_ips)
+        )
+
+        if incident.first_seen and incident.last_seen:
+            query = query.filter(
+                Alert.created_at >= incident.first_seen,
+                Alert.created_at <= incident.last_seen,
+            )
+
+        return query.all()
+
+    def _get_incident_events(
+        self,
+        incident: Incident,
+        alerts: List[Alert],
+    ) -> List[Event]:
+        """
+        Retrieve events that contributed to the incident alerts.
+
+        Falls back to source-IP/timeline matching if alert evidence
+        is unavailable.
+        """
+
+        evidence_ids = set()
+
         for alert in alerts:
             if alert.evidence:
-                for event_id in alert.evidence:
-                    if event_id not in event_ids:
-                        event = self.db.query(Event).filter(Event.id == event_id).first()
-                        if event:
-                            events.append(event)
-                            event_ids.add(event_id)
+                evidence_ids.update(alert.evidence)
 
-        # Fallback / Correlated: Get events by source IP within incident timeline
-        if incident.source_entities:
-            for source_ip in incident.source_entities:
-                query = self.db.query(Event).filter(Event.source_ip == source_ip)
-                if incident.first_seen:
-                    query = query.filter(Event.timestamp >= incident.first_seen)
-                if incident.last_seen:
-                    query = query.filter(Event.timestamp <= incident.last_seen)
-                correlated_events = query.all()
-                for e in correlated_events:
-                    if e.id not in event_ids:
-                        events.append(e)
-                        event_ids.add(e.id)
+        if evidence_ids:
+            events = (
+                self.db.query(Event)
+                .filter(Event.id.in_(list(evidence_ids)))
+                .all()
+            )
 
-        # Enforce strict boundary: event.timestamp >= first_seen and <= last_seen
-        filtered_events = []
-        for e in events:
-            if e.timestamp:
-                if incident.first_seen and e.timestamp < incident.first_seen:
-                    continue
-                if incident.last_seen and e.timestamp > incident.last_seen:
-                    continue
-            filtered_events.append(e)
+            if events:
+                return events
 
-        return list({e.id: e for e in filtered_events}.values())
+        source_ips = incident.source_entities or []
 
-    def _build_timeline(self, events: List[Event], alerts: List[Alert]) -> List[Dict]:
-        """Build chronological timeline of the attack."""
-        timeline = []
+        if not source_ips:
+            return []
 
-        for event in events:
-            stage = self._get_stage_from_event(event)
-            timeline.append({
-                "id": event.id,
-                "type": "event",
-                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
-                "event_type": event.event_type,
-                "stage": stage,
-                "source_ip": event.source_ip,
-                "target_host": event.host,
-                "username": event.username,
-                "description": (event.raw_event or "")[:200],
-                "severity": event.severity,
-                "mitre_technique": self._get_mitre_from_event(event)
-            })
+        query = self.db.query(Event).filter(
+            Event.source_ip.in_(source_ips)
+        )
 
-        for alert in alerts:
-            timeline.append({
-                "id": alert.id,
-                "type": "alert",
-                "timestamp": alert.created_at.isoformat() if alert.created_at else None,
-                "event_type": alert.alert_type,
-                "stage": self._get_stage_from_alert(alert),
-                "source_ip": alert.source_ip,
-                "target_host": alert.target_host,
-                "description": alert.description,
-                "severity": alert.severity,
-                "confidence": alert.confidence,
-                "mitre_technique": alert.mitre_technique
-            })
+        if incident.first_seen and incident.last_seen:
+            query = query.filter(
+                Event.timestamp >= incident.first_seen,
+                Event.timestamp <= incident.last_seen,
+            )
 
-        timeline.sort(key=lambda x: x["timestamp"] or "")
-        return timeline
+        return query.all()
 
-    def _build_attack_graph(
+    # ------------------------------------------------------------------
+    # Timeline
+    # ------------------------------------------------------------------
+
+    def _build_timeline(
         self,
         events: List[Event],
         alerts: List[Alert],
-        incident: Incident
+    ) -> List[Dict[str, Any]]:
+        timeline = []
+
+        for event in events:
+            timestamp = self._parse_timestamp(event.timestamp)
+
+            timeline.append(
+                {
+                    "type": "event",
+                    "id": event.id,
+                    "timestamp": utc_iso(event.timestamp),
+                    "host": event.host,
+                    "source_ip": event.source_ip,
+                    "event_type": event.event_type,
+                    "username": event.username,
+                    "severity": event.severity,
+                    "description": (
+                        event.normalized_data.get("description")
+                        if isinstance(event.normalized_data, dict)
+                        else None
+                    ),
+                    "_sort_timestamp": timestamp,
+                }
+            )
+
+        for alert in alerts:
+            timestamp = self._parse_timestamp(alert.created_at)
+
+            timeline.append(
+                {
+                    "type": "alert",
+                    "id": alert.id,
+                    "timestamp": utc_iso(alert.created_at),
+                    "alert_type": alert.alert_type,
+                    "severity": alert.severity,
+                    "mitre_technique": alert.mitre_technique,
+                    "source_ip": alert.source_ip,
+                    "target_host": alert.target_host,
+                    "description": alert.description,
+                    "confidence": alert.confidence,
+                    "_sort_timestamp": timestamp,
+                }
+            )
+
+        timeline.sort(
+            key=lambda item: item["_sort_timestamp"] or UTC_MAX
+        )
+
+        for item in timeline:
+            item.pop("_sort_timestamp", None)
+
+        return timeline
+
+    # ------------------------------------------------------------------
+    # Attack graph
+    # ------------------------------------------------------------------
+
+    def _build_attack_graph(
+        self,
+        incident: Incident,
+        events: List[Event],
+        alerts: List[Alert],
     ) -> Dict[str, Any]:
-        """Build attack graph with nodes and edges."""
+
         nodes = []
         edges = []
 
-        seen_nodes = set()
-        seen_edges = set()
+        node_ids = set()
 
-        # Attacker node(s)
-        for ip in (incident.source_entities or []):
-            node_id = f"attacker-{ip}"
-            if node_id not in seen_nodes:
-                nodes.append({
+        def add_node(
+            node_id: str,
+            node_type: str,
+            label: str,
+            metadata: Optional[Dict[str, Any]] = None,
+        ):
+            if node_id in node_ids:
+                return
+
+            node_ids.add(node_id)
+
+            nodes.append(
+                {
                     "id": node_id,
-                    "type": "attacker",
-                    "label": ip,
-                    "data": {"ip": ip, "role": "attacker"}
-                })
-                seen_nodes.add(node_id)
+                    "type": node_type,
+                    "label": label,
+                    "metadata": metadata or {},
+                }
+            )
 
-        # Target node(s)
-        for host in (incident.target_entities or []):
-            node_id = f"target-{host}"
-            if node_id not in seen_nodes:
-                nodes.append({
-                    "id": node_id,
-                    "type": "target",
-                    "label": host,
-                    "data": {"host": host, "role": "target"}
-                })
-                seen_nodes.add(node_id)
+        def add_edge(
+            source: str,
+            target: str,
+            relationship: str,
+        ):
+            edges.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "relationship": relationship,
+                }
+            )
 
-        # Stage nodes - from alerts and correlated events
-        stage_mitre_map = {}
-        stage_first_seen_map = {}
+        source_entities = incident.source_entities or []
+        target_entities = incident.target_entities or []
+
+        for source in source_entities:
+            source_id = f"source:{source}"
+
+            add_node(
+                source_id,
+                "attacker",
+                source,
+            )
+
+        for target in target_entities:
+            target_id = f"target:{target}"
+
+            add_node(
+                target_id,
+                "target",
+                target,
+            )
+
+            for source in source_entities:
+                add_edge(
+                    f"source:{source}",
+                    target_id,
+                    "targets",
+                )
+
+        stage_first_seen: Dict[str, datetime] = {}
+
         for alert in alerts:
-            st = self._get_stage_from_alert(alert)
-            if st and st != "Unknown":
-                stage_mitre_map[st] = alert.mitre_technique
-                ts = alert.created_at.isoformat() if alert.created_at else "9999"
-                if st not in stage_first_seen_map or ts < stage_first_seen_map[st]:
-                    stage_first_seen_map[st] = ts
-        for event in events:
-            st = self._get_stage_from_event(event)
-            if st and st != "Unknown":
-                if st not in stage_mitre_map:
-                    stage_mitre_map[st] = self._get_mitre_from_event(event)
-                ts = event.timestamp.isoformat() if event.timestamp else "9999"
-                if st not in stage_first_seen_map or ts < stage_first_seen_map[st]:
-                    stage_first_seen_map[st] = ts
+            stage = self._get_stage_from_alert(alert)
 
-        for stage, mitre_tech in stage_mitre_map.items():
-            stage_id = f"stage-{stage.lower().replace(' ', '-')}"
-            if stage_id not in seen_nodes:
-                nodes.append({
-                    "id": stage_id,
-                    "type": "stage",
-                    "label": stage,
-                    "data": {
-                        "stage": stage,
-                        "mitre_technique": mitre_tech
-                    }
-                })
-                seen_nodes.add(stage_id)
+            timestamp = self._parse_timestamp(alert.created_at)
 
-        # User nodes
-        usernames = set(e.username for e in events if e.username)
-        for username in usernames:
-            node_id = f"user-{username}"
-            if node_id not in seen_nodes:
-                nodes.append({
-                    "id": node_id,
-                    "type": "user",
-                    "label": username,
-                    "data": {"username": username, "role": "user"}
-                })
-                seen_nodes.add(node_id)
+            if timestamp:
+                current = stage_first_seen.get(stage)
 
-        # Edges from attacker to targets
-        for ip in (incident.source_entities or []):
-            for host in (incident.target_entities or []):
-                edge_id = f"edge-{ip}-{host}"
-                if edge_id not in seen_edges:
-                    edges.append({
-                        "id": edge_id,
-                        "source": f"attacker-{ip}",
-                        "target": f"target-{host}",
-                        "label": "attacked"
-                    })
-                    seen_edges.add(edge_id)
+                if current is None or timestamp < current:
+                    stage_first_seen[stage] = timestamp
 
-        # Edges from attacker to stages (in chronological order)
-        stages_in_order = sorted(
-            list(stage_mitre_map.keys()),
-            key=lambda s: (stage_first_seen_map.get(s, "9999"), self.STAGE_ORDER.get(s, 99))
+            stage_id = f"stage:{stage}"
+
+            add_node(
+                stage_id,
+                "stage",
+                stage,
+                {
+                    "description": self.STAGE_DESCRIPTIONS.get(
+                        stage,
+                        "",
+                    ),
+                    "mitre_technique": alert.mitre_technique,
+                },
+            )
+
+            if alert.source_ip:
+                add_edge(
+                    f"source:{alert.source_ip}",
+                    stage_id,
+                    "performs",
+                )
+
+            if alert.target_host:
+                add_edge(
+                    stage_id,
+                    f"target:{alert.target_host}",
+                    "affects",
+                )
+
+            usernames = {
+                event.username
+                for event in events
+                if (
+                    event.username
+                    and event.source_ip == alert.source_ip
+                    and event.host == alert.target_host
+                )
+            }
+
+            for username in usernames:
+                user_id = f"user:{username}"
+
+                add_node(
+                    user_id,
+                    "user",
+                    username,
+                )
+
+                add_edge(
+                    stage_id,
+                    user_id,
+                    "targets_account",
+                )
+
+        ordered_stages = sorted(
+            stage_first_seen.keys(),
+            key=lambda stage: (
+                stage_first_seen.get(stage, UTC_MAX),
+                self.STAGE_ORDER.index(stage)
+                if stage in self.STAGE_ORDER
+                else len(self.STAGE_ORDER),
+            ),
         )
 
-        for ip in (incident.source_entities or []):
-            for i, stage in enumerate(stages_in_order):
-                stage_id = f"stage-{stage.lower().replace(' ', '-')}"
-                edge_id = f"edge-{ip}-{stage}"
-                if edge_id not in seen_edges:
-                    edges.append({
-                        "id": edge_id,
-                        "source": f"attacker-{ip}",
-                        "target": stage_id,
-                        "label": f"stage-{i+1}"
-                    })
-                    seen_edges.add(edge_id)
+        for first_stage, second_stage in zip(
+            ordered_stages,
+            ordered_stages[1:],
+        ):
+            add_edge(
+                f"stage:{first_stage}",
+                f"stage:{second_stage}",
+                "follows",
+            )
 
         return {
             "nodes": nodes,
             "edges": edges,
-            "node_count": len(nodes),
-            "edge_count": len(edges)
         }
+
+    # ------------------------------------------------------------------
+    # Attack stages
+    # ------------------------------------------------------------------
 
     def _identify_stages(
         self,
+        incident: Incident,
         events: List[Event],
         alerts: List[Alert],
-        incident: Incident
-    ) -> List[Dict]:
-        """Identify attack stages with timing."""
-        stage_data = {}
+    ) -> List[Dict[str, Any]]:
 
-        # From alerts
-        for alert in alerts:
-            stage = self._get_stage_from_alert(alert)
-            if stage and stage != "Unknown":
-                if stage not in stage_data:
-                    stage_data[stage] = {
-                        "stage": stage,
-                        "order": self.STAGE_ORDER.get(stage, 99),
-                        "first_seen": alert.created_at.isoformat() if alert.created_at else None,
-                        "last_seen": alert.created_at.isoformat() if alert.created_at else None,
-                        "alert_types": [],
-                        "mitre_techniques": [],
-                        "event_count": 0
-                    }
-                stage_data[stage]["alert_types"].append(alert.alert_type)
-                if alert.mitre_technique and alert.mitre_technique not in stage_data[stage]["mitre_techniques"]:
-                    stage_data[stage]["mitre_techniques"].append(alert.mitre_technique)
+        stage_data: Dict[str, Dict[str, Any]] = {}
 
-        # From events
-        for event in events:
-            stage = self._get_stage_from_event(event)
-            if stage and stage != "Unknown":
-                if stage not in stage_data:
-                    stage_data[stage] = {
-                        "stage": stage,
-                        "order": self.STAGE_ORDER.get(stage, 99),
-                        "first_seen": event.timestamp.isoformat() if event.timestamp else None,
-                        "last_seen": event.timestamp.isoformat() if event.timestamp else None,
-                        "alert_types": [],
-                        "mitre_techniques": [],
-                        "event_count": 0
-                    }
-                stage_data[stage]["event_count"] += 1
-                if event.timestamp:
-                    ts = event.timestamp.isoformat()
-                    if not stage_data[stage]["first_seen"] or ts < stage_data[stage]["first_seen"]:
-                        stage_data[stage]["first_seen"] = ts
-                    if not stage_data[stage]["last_seen"] or ts > stage_data[stage]["last_seen"]:
-                        stage_data[stage]["last_seen"] = ts
-
-        # From incident attack chain
-        for chain_item in (incident.attack_chain or []):
-            stage = chain_item.get("stage", "Unknown")
-            if stage != "Unknown" and stage not in stage_data:
+        def ensure_stage(stage: str):
+            if stage not in stage_data:
                 stage_data[stage] = {
                     "stage": stage,
-                    "order": self.STAGE_ORDER.get(stage, 99),
-                    "first_seen": chain_item.get("timestamp"),
-                    "last_seen": chain_item.get("timestamp"),
-                    "alert_types": [],
-                    "mitre_techniques": [chain_item.get("technique_id")] if chain_item.get("technique_id") else [],
-                    "event_count": 0,
-                    "description": self.STAGE_DESCRIPTIONS.get(stage, "")
+                    "description": self.STAGE_DESCRIPTIONS.get(
+                        stage,
+                        "",
+                    ),
+                    "mitre_techniques": [],
+                    "_first_seen_dt": None,
+                    "_last_seen_dt": None,
                 }
 
-        # Convert to list and sort chronologically by first_seen, falling back to STAGE_ORDER
+        def update_stage(
+            stage: str,
+            timestamp: Any,
+            mitre: Optional[str] = None,
+        ):
+            ensure_stage(stage)
+
+            parsed = self._parse_timestamp(timestamp)
+
+            if parsed:
+                current_first = stage_data[stage]["_first_seen_dt"]
+                current_last = stage_data[stage]["_last_seen_dt"]
+
+                if current_first is None or parsed < current_first:
+                    stage_data[stage]["_first_seen_dt"] = parsed
+
+                if current_last is None or parsed > current_last:
+                    stage_data[stage]["_last_seen_dt"] = parsed
+
+            if mitre:
+                if mitre not in stage_data[stage]["mitre_techniques"]:
+                    stage_data[stage]["mitre_techniques"].append(mitre)
+
+        for alert in alerts:
+            stage = self._get_stage_from_alert(alert)
+
+            update_stage(
+                stage,
+                alert.created_at,
+                alert.mitre_technique,
+            )
+
+        for event in events:
+            stage = self._get_stage_from_event(event)
+
+            update_stage(
+                stage,
+                event.timestamp,
+                self._get_mitre_from_event(event),
+            )
+
+        # Existing attack-chain data is used as an additional source.
+        for chain_item in incident.attack_chain or []:
+            if not isinstance(chain_item, dict):
+                continue
+
+            stage = chain_item.get("stage") or "Unknown"
+
+            update_stage(
+                stage,
+                chain_item.get("timestamp"),
+                chain_item.get("technique_id"),
+            )
+
         stages = list(stage_data.values())
-        stages.sort(key=lambda s: (s["first_seen"] or "9999", s.get("order", 99)))
 
-        # Assign contiguous 1-based chronological order (1, 2, 3...)
-        for idx, stage in enumerate(stages, start=1):
-            stage["order"] = idx
-            if "description" not in stage or not stage["description"]:
-                stage["description"] = self.STAGE_DESCRIPTIONS.get(stage["stage"], "")
+        stages.sort(
+            key=lambda stage: (
+                stage["_first_seen_dt"] or UTC_MAX,
+                self.STAGE_ORDER.index(stage["stage"])
+                if stage["stage"] in self.STAGE_ORDER
+                else len(self.STAGE_ORDER),
+            )
+        )
 
-        return stages
+        result = []
+
+        for index, stage in enumerate(stages, start=1):
+            first_seen = stage.pop("_first_seen_dt", None)
+            last_seen = stage.pop("_last_seen_dt", None)
+
+            stage["order"] = index
+
+            stage["first_seen"] = utc_iso(first_seen)
+            stage["last_seen"] = utc_iso(last_seen)
+
+            result.append(stage)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Entity extraction
+    # ------------------------------------------------------------------
 
     def _extract_entities(
         self,
+        incident: Incident,
         events: List[Event],
         alerts: List[Alert],
-        incident: Incident
-    ) -> Dict[str, List]:
-        """Extract all entities from an incident."""
-        entities = {
-            "source_ips": set(incident.source_entities or []),
-            "target_hosts": set(incident.target_entities or []),
-            "usernames": set(),
-            "event_types": set(),
-            "alert_types": set(),
-            "mitre_techniques": set(incident.mitre_techniques or [])
-        }
+    ) -> Dict[str, List[str]]:
+
+        source_ips = set(incident.source_entities or [])
+        target_hosts = set(incident.target_entities or [])
+        usernames = set()
 
         for event in events:
             if event.source_ip:
-                entities["source_ips"].add(event.source_ip)
+                source_ips.add(event.source_ip)
+
             if event.host:
-                entities["target_hosts"].add(event.host)
+                target_hosts.add(event.host)
+
             if event.username:
-                entities["usernames"].add(event.username)
-            if event.event_type:
-                entities["event_types"].add(event.event_type)
+                usernames.add(event.username)
 
         for alert in alerts:
             if alert.source_ip:
-                entities["source_ips"].add(alert.source_ip)
+                source_ips.add(alert.source_ip)
+
             if alert.target_host:
-                entities["target_hosts"].add(alert.target_host)
-            if alert.alert_type:
-                entities["alert_types"].add(alert.alert_type)
-            if alert.mitre_technique:
-                entities["mitre_techniques"].add(alert.mitre_technique)
+                target_hosts.add(alert.target_host)
 
         return {
-            "source_ips": sorted(list(entities["source_ips"])),
-            "target_hosts": sorted(list(entities["target_hosts"])),
-            "usernames": sorted(list(entities["usernames"])),
-            "event_types": sorted(list(entities["event_types"])),
-            "alert_types": sorted(list(entities["alert_types"])),
-            "mitre_techniques": sorted(list(entities["mitre_techniques"]))
+            "source_ips": sorted(source_ips),
+            "target_hosts": sorted(target_hosts),
+            "usernames": sorted(usernames),
         }
 
-    def _get_stage_from_event(self, event: Event) -> str:
-        """Determine attack stage from a single event."""
-        event_type = (event.event_type or "").lower()
-        raw = (event.raw_event or "").lower()
+    # ------------------------------------------------------------------
+    # Stage classification
+    # ------------------------------------------------------------------
 
-        # Port scanning / reconnaissance (T1046) - check event_type first
-        if event_type == "port_scan" or "port scan" in raw or "syn sweep" in raw:
+    def _get_stage_from_event(self, event: Event) -> str:
+        event_type = (event.event_type or "").lower()
+
+        normalized = event.normalized_data or {}
+
+        text_parts = [
+            event_type,
+            event.raw_event or "",
+        ]
+
+        if isinstance(normalized, dict):
+            text_parts.extend(
+                str(value)
+                for value in normalized.values()
+            )
+
+        text = " ".join(text_parts).lower()
+
+        if any(
+            value in text
+            for value in [
+                "port_scan",
+                "port scan",
+                "network_scan",
+                "network scan",
+                "scan",
+            ]
+        ):
             return "Reconnaissance"
 
-        # Failed authentication / brute force (T1110)
-        if event_type == "ssh_failed_login" or "failed password" in raw or ("failed" in event_type and "ssh" in event_type):
+        if any(
+            value in text
+            for value in [
+                "failed_login",
+                "failed login",
+                "authentication_failure",
+                "auth failure",
+                "brute_force",
+                "brute force",
+            ]
+        ):
             return "Credential Access"
 
-        # Successful login (T1078)
-        if event_type == "ssh_success" or "accepted password" in raw or ("success" in event_type and "ssh" in event_type):
+        if any(
+            value in text
+            for value in [
+                "successful_login",
+                "successful login",
+                "login_success",
+                "login success",
+            ]
+        ):
             return "Initial Access"
 
-        # Privilege escalation (T1548 / T1068)
-        if "sudo" in raw or "privilege" in raw or "su -" in raw or "su " in raw:
+        if any(
+            value in text
+            for value in [
+                "privilege_escalation",
+                "privilege escalation",
+                "sudo",
+                "root",
+            ]
+        ):
             return "Privilege Escalation"
 
-        # Credential dumping (T1003)
-        if "shadow" in raw or "passwd" in raw or "mimikatz" in raw:
-            return "Credential Dumping"
-
-        # C2 (T1071)
-        if "reverse shell" in raw or ("nc " in raw and "-e" in raw) or "malicious.com 4444" in raw:
-            return "Command & Control"
-
-        # General command execution (T1059)
-        if event_type == "command_execution" or "wget" in raw or "curl" in raw or "bash" in raw or "sh" in raw:
-            return "Execution"
-
-        # Other generic checks
-        if "scan" in raw or "probe" in raw:
-            return "Reconnaissance"
-        if "failed" in event_type or "failed" in raw:
+        if any(
+            value in text
+            for value in [
+                "credential_dump",
+                "credential dumping",
+                "password_dump",
+                "lsass",
+            ]
+        ):
             return "Credential Access"
-        if "success" in event_type or "accepted" in raw:
-            return "Initial Access"
+
+        if any(
+            value in text
+            for value in [
+                "c2",
+                "command_and_control",
+                "beacon",
+                "beaconing",
+            ]
+        ):
+            return "Command and Control"
+
+        if any(
+            value in text
+            for value in [
+                "command",
+                "powershell",
+                "shell",
+                "exec",
+                "execution",
+            ]
+        ):
+            return "Execution"
 
         return "Unknown"
 
     def _get_stage_from_alert(self, alert: Alert) -> str:
-        """Determine attack stage from an alert."""
         alert_type = (alert.alert_type or "").lower()
+        description = (alert.description or "").lower()
 
-        # Try MITRE first
         if alert.mitre_technique:
-            if alert.mitre_technique in self.MITRE_TO_STAGE:
-                return self.MITRE_TO_STAGE[alert.mitre_technique]
+            mitre_stage = self.MITRE_TO_STAGE.get(
+                alert.mitre_technique
+            )
 
-        # Fall back to alert type
+            if mitre_stage:
+                return mitre_stage
+
         if "port_scan" in alert_type:
             return "Reconnaissance"
-        elif "brute_force" in alert_type:
+
+        if "scan" in description:
+            return "Reconnaissance"
+
+        if "brute_force" in alert_type:
             return "Credential Access"
-        elif "successful_login" in alert_type:
+
+        if "successful_login" in alert_type:
             return "Initial Access"
-        elif "suspicious_command" in alert_type:
+
+        if "suspicious_command" in alert_type:
             return "Execution"
-        elif "privilege" in alert_type:
+
+        if "privilege" in alert_type:
             return "Privilege Escalation"
-        elif "exfiltration" in alert_type:
-            return "Exfiltration"
+
+        if "escalation" in description:
+            return "Privilege Escalation"
+
+        if "credential" in alert_type:
+            return "Credential Access"
+
+        if "c2" in alert_type or "beacon" in alert_type:
+            return "Command and Control"
 
         return "Unknown"
 
-    def _get_mitre_from_event(self, event: Event) -> Optional[str]:
-        """Get MITRE technique from an event."""
-        event_type = (event.event_type or "").lower()
-        if event_type == "port_scan":
+    # ------------------------------------------------------------------
+    # MITRE
+    # ------------------------------------------------------------------
+
+    def _get_mitre_from_event(
+        self,
+        event: Event,
+    ) -> Optional[str]:
+
+        text = " ".join(
+            [
+                event.event_type or "",
+                event.raw_event or "",
+            ]
+        ).lower()
+
+        if isinstance(event.normalized_data, dict):
+            text += " " + " ".join(
+                str(value)
+                for value in event.normalized_data.values()
+            ).lower()
+
+        if "scan" in text:
             return "T1046"
-        elif event_type == "ssh_failed_login":
+
+        if (
+            "failed_login" in text
+            or "brute_force" in text
+            or "brute force" in text
+        ):
             return "T1110"
-        elif event_type == "ssh_success":
+
+        if (
+            "successful_login" in text
+            or "login_success" in text
+        ):
             return "T1078"
-        elif event_type == "command_execution":
-            stage = self._get_stage_from_event(event)
-            if stage == "Privilege Escalation":
-                return "T1548"
-            elif stage == "Credential Dumping":
-                return "T1003"
-            elif stage == "Command & Control":
-                return "T1071"
+
+        if (
+            "powershell" in text
+            or "command" in text
+            or "shell" in text
+        ):
             return "T1059"
 
-        stage = self._get_stage_from_event(event)
-        for technique, mapped_stage in self.MITRE_TO_STAGE.items():
-            if mapped_stage == stage:
-                return technique
+        if (
+            "privilege" in text
+            or "sudo" in text
+        ):
+            return "T1068"
+
+        if (
+            "credential_dump" in text
+            or "credential dumping" in text
+            or "lsass" in text
+        ):
+            return "T1003"
+
         return None
 
-    def _calculate_durations(self, incident: Incident) -> Dict[str, Optional[float]]:
-        """Calculate incident duration in seconds and minutes."""
-        if incident.first_seen and incident.last_seen:
-            delta = incident.last_seen - incident.first_seen
-            seconds = round(delta.total_seconds(), 3)
-            minutes = round(seconds / 60.0, 3)
-            return {
-                "duration_seconds": seconds,
-                "duration_minutes": minutes
-            }
-        return {
-            "duration_seconds": None,
-            "duration_minutes": None
-        }
+    # ------------------------------------------------------------------
+    # Duration
+    # ------------------------------------------------------------------
+
+    def _calculate_durations(
+        self,
+        incident: Incident,
+        events: List[Event],
+        alerts: List[Alert],
+    ) -> float:
+
+        timestamps: List[datetime] = []
+
+        if incident.first_seen:
+            first = self._parse_timestamp(incident.first_seen)
+
+            if first:
+                timestamps.append(first)
+
+        if incident.last_seen:
+            last = self._parse_timestamp(incident.last_seen)
+
+            if last:
+                timestamps.append(last)
+
+        for event in events:
+            timestamp = self._parse_timestamp(event.timestamp)
+
+            if timestamp:
+                timestamps.append(timestamp)
+
+        for alert in alerts:
+            timestamp = self._parse_timestamp(alert.created_at)
+
+            if timestamp:
+                timestamps.append(timestamp)
+
+        if len(timestamps) < 2:
+            return 0.0
+
+        return max(
+            0.0,
+            (
+                max(timestamps) - min(timestamps)
+            ).total_seconds(),
+        )

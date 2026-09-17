@@ -6,7 +6,7 @@ import {
   RefreshCw,
   CheckCircle,
 } from 'lucide-react'
-import { api, type HealthDetailed } from '@/lib/api'
+import { api, type HealthDetailed, type ResponsePolicy } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { ErrorState, LoadingState } from '@/components/threatlens/ui'
 
@@ -24,14 +24,22 @@ export default function SettingsPage() {
   const [cleaningEvents, setCleaningEvents] = useState(false)
   const [cleaningIncidents, setCleaningIncidents] = useState(false)
   const [cleanupMessage, setCleanupMessage] = useState<string | null>(null)
+  const [policies, setPolicies] = useState<ResponsePolicy[]>([])
 
   const loadHealthData = async () => {
     setLoading(true)
     setError(null)
     try {
-      const [detailedRes, basicRes] = await Promise.allSettled([api.healthDetailed(), api.health()])
+      const [detailedRes, basicRes, policyRes] = await Promise.allSettled([
+        api.healthDetailed(),
+        api.health(),
+        api.responsePolicies(),
+      ])
       if (detailedRes.status === 'fulfilled') setHealth(detailedRes.value)
       if (basicRes.status === 'fulfilled') setBasicHealth(basicRes.value)
+      if (policyRes.status === 'fulfilled') setPolicies(policyRes.value)
+      const failures = [detailedRes, basicRes, policyRes].filter((result) => result.status === 'rejected')
+      if (failures.length) setError(`${failures.length} settings data source(s) could not be loaded.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to connect to health diagnostics.')
     } finally {
@@ -99,7 +107,7 @@ export default function SettingsPage() {
         <>
           <section className="metric-grid">
             <article className="metric-card-clean">
-              <strong>{basicHealth?.database === 'healthy' ? 'Operational' : 'Online'}</strong>
+              <strong>{basicHealth?.database === 'healthy' ? 'Operational' : 'Unavailable'}</strong>
               <span>Database Engine</span>
               <small>SQLite Telemetry Store</small>
             </article>
@@ -111,13 +119,13 @@ export default function SettingsPage() {
             </article>
 
             <article className="metric-card-clean">
-              <strong>{health?.system ? `${health.system.cpu_percent}%` : 'Normal'}</strong>
+              <strong>{health?.system ? `${health.system.cpu_percent}%` : 'Unavailable'}</strong>
               <span>CPU Utilization</span>
               <small>Backend host</small>
             </article>
 
             <article className="metric-card-clean">
-              <strong>{health?.system ? health.system.memory_used : 'Optimal'}</strong>
+              <strong>{health?.system ? health.system.memory_used : 'Unavailable'}</strong>
               <span>Memory Used</span>
               <small>{health?.system ? `of ${health.system.memory_total}` : 'Host RAM'}</small>
             </article>
@@ -185,22 +193,14 @@ export default function SettingsPage() {
                 <h2>Defensive Response Policies</h2>
               </div>
               <div className="p-4 space-y-2 text-[11.5px] font-mono">
-                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
-                  <span>Block Malicious IP</span>
-                  <span className="text-success font-semibold">Autonomous Allowed</span>
-                </div>
-                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
-                  <span>Disable User Account</span>
-                  <span className="text-sev-high font-semibold">Approval Required</span>
-                </div>
-                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
-                  <span>Isolate Host Endpoint</span>
-                  <span className="text-sev-high font-semibold">Approval Required</span>
-                </div>
-                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
-                  <span>Apply CVE Mitigation</span>
-                  <span className="text-sev-high font-semibold">Approval Required</span>
-                </div>
+                {policies.length ? policies.map((policy) => (
+                  <div key={policy.action_type} className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between gap-3">
+                    <span>{policy.action_type.replaceAll('_', ' ')}</span>
+                    <span className="text-muted font-semibold">
+                      {!policy.enabled ? 'Disabled' : policy.requires_approval ? 'Approval Required' : policy.auto_execute ? 'Autonomous Allowed' : 'Manual Execution'}
+                    </span>
+                  </div>
+                )) : <p className="text-muted">No response policies returned by the backend.</p>}
               </div>
             </article>
 

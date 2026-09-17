@@ -2,6 +2,7 @@ from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from typing import List, Dict, Any
 import json
 import asyncio
+from app.core.time import utc_iso, utc_now
 
 router = APIRouter()
 
@@ -26,12 +27,27 @@ class ConnectionManager:
         disconnected = []
         for connection in self.active_connections:
             try:
-                await connection.send_json(message)
+                await connection.send_json({
+                    **message,
+                    "timestamp": message.get("timestamp") or utc_iso(utc_now()),
+                })
             except:
                 disconnected.append(connection)
 
         for conn in disconnected:
             self.disconnect(conn)
+
+    def broadcast_sync(self, message: Dict[str, Any]):
+        if not self.active_connections:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.broadcast(message))
+            return
+
+        loop.create_task(self.broadcast(message))
 
 manager = ConnectionManager()
 
@@ -58,7 +74,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "connected",
             "status": "ok",
-            "message": "Connected to MiniSOC ThreatLens WebSocket"
+            "message": "Connected to MiniSOC ThreatLens WebSocket",
+            "timestamp": utc_iso(utc_now()),
         })
 
         # Send a ping every 30 seconds to keep connection alive
@@ -69,14 +86,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Wait for messages with timeout
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
                 if data == "ping":
-                    await websocket.send_json({"type": "pong"})
+                    await websocket.send_json({"type": "pong", "timestamp": utc_iso(utc_now())})
                 elif data == "close":
                     await websocket.close()
                     break
             except asyncio.TimeoutError:
                 # Send a ping to check if connection is still alive
                 try:
-                    await websocket.send_json({"type": "ping"})
+                    await websocket.send_json({"type": "ping", "timestamp": utc_iso(utc_now())})
                 except:
                     break
             except WebSocketDisconnect:
@@ -100,6 +117,6 @@ async def send_ping(websocket: WebSocket):
     while True:
         try:
             await asyncio.sleep(30)  # Send ping every 30 seconds
-            await websocket.send_json({"type": "ping"})
+            await websocket.send_json({"type": "ping", "timestamp": utc_iso(utc_now())})
         except:
             break

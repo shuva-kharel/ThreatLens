@@ -1,396 +1,912 @@
-from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List
+
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.core.detection import DetectionEngine
+from app.core.time import ensure_utc, utc_iso, utc_now
 from app.models.database import Event, Alert, Incident
 from app.models.schemas import EventCreate
-from app.core.detection import DetectionEngine
-from app.config import settings
-from pydantic import BaseModel
-import uuid
-import asyncio
-
-# Import WebSocket broadcast functions
-from app.api.websocket import broadcast_new_alert, broadcast_new_incident
+from app.services.response_service import ResponseService
+from app.services.recurrence_service import RecurrenceService
 
 
 class EventBatch(BaseModel):
-    """Schema for batch event submission."""
     events: List[EventCreate]
 
 
 class EventService:
+    """
+    Main event ingestion and processing service.
+
+    Flow:
+
+        Event
+          ↓
+        Detection
+          ↓
+        Alert
+          ↓
+        Correlation
+          ↓
+        Incident
+          ↓
+        WebSocket broadcast
+    """
+
     def __init__(self, db: Session):
         self.db = db
 
-    def create_event(self, event_data: EventCreate) -> Event:
-        """Create a new event."""
-        normalized_data = event_data.dict(exclude={'raw_event'})
-        if 'timestamp' in normalized_data and isinstance(normalized_data['timestamp'], datetime):
-            normalized_data['timestamp'] = normalized_data['timestamp'].isoformat()
+        # DetectionEngine requires the database session.
+        self.detection_engine = DetectionEngine(db)
+
+    # =========================================================================
+    # HELPERS
+    # =========================================================================
+
+    @staticmethod
+    def _enum_or_value(value):
+        """
+        Safely handle both Enum instances and plain strings.
+
+        Examples:
+
+            Severity.HIGH -> "high"
+            "high"        -> "high"
+            None          -> None
+        """
+
+        if value is None:
+            return None
+
+        return getattr(value, "value", value)
+
+    # =========================================================================
+    # EVENT CREATION
+    # =========================================================================
+
+    def create_event(
+        self,
+        event_data: EventCreate,
+    ) -> Event:
+        """
+        Create a database Event from EventCreate.
+
+        Legacy naive input timestamps are interpreted as UTC.
+        """
+
+        severity = self._enum_or_value(
+            event_data.severity
+        )
 
         event = Event(
-            id=str(uuid.uuid4()),
-            timestamp=event_data.timestamp,
+            timestamp=ensure_utc(event_data.timestamp),
             host=event_data.host,
             source_ip=event_data.source_ip,
             event_type=event_data.event_type,
             username=event_data.username,
-            severity=event_data.severity.value if event_data.severity else None,
+            severity=severity,
             raw_event=event_data.raw_event,
-            normalized_data=normalized_data
+            normalized_data=event_data.normalized_data,
         )
+
         self.db.add(event)
         self.db.commit()
         self.db.refresh(event)
+
         return event
 
-    def process_event(self, event_data: EventCreate) -> dict:
-        """Process a single event through the full pipeline."""
-        event = self.create_event(event_data)
-        self.db.commit()
+    # =========================================================================
+    # SINGLE EVENT PROCESSING
+    # =========================================================================
 
-        # Run detection
-        engine = DetectionEngine(self.db)
-        alerts = engine.process_event(event)
+    def process_event(
+        self,
+        event_data: EventCreate,
+    ):
+        """
+        Process a single event through detection and correlation.
+        """
+
+        event = self.create_event(event_data)
+
+        # ---------------------------------------------------------------------
+        # Detection
+        # ---------------------------------------------------------------------
+
+        alerts = self.detection_engine.process_event(event)
 
         created_alerts = []
-        incidents = []
-        seen_incident_ids = set()
+        correlated_incidents = []
 
         for alert_data in alerts:
-            alert = self._create_alert(alert_data)
+
+            alert = self._create_alert(
+                event=event,
+                alert_data=alert_data,
+            )
+
             created_alerts.append(alert)
+
             self._broadcast_alert(alert)
 
-        # Create incidents from alerts
-        if created_alerts:
-            for alert in created_alerts:
-                incident = self._create_incident_from_alert(alert)
-                if incident:
-                    alert.incident_id = incident.id
-                    self.db.commit()
-                    self.db.refresh(alert)
+            # -----------------------------------------------------------------
+            # Incident correlation
+            # -----------------------------------------------------------------
 
-                    if incident.id not in seen_incident_ids:
-                        seen_incident_ids.add(incident.id)
-                        self._broadcast_incident(incident)
-                        incidents.append(self._serialize_incident(incident))
-        else:
-            # Check if there is an existing active incident for this source IP within correlation window
-            if event.source_ip and event.timestamp:
-                active_incident = self.db.query(Incident).filter(
-                    Incident.status.in_(["open", "investigating"]),
-                    Incident.source_entities.contains([event.source_ip])
-                ).order_by(Incident.last_seen.desc()).first()
-                if active_incident and active_incident.last_seen:
-                    window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
-                    gap = (event.timestamp - active_incident.last_seen).total_seconds()
-                    if 0 <= gap <= window_seconds:
-                        active_incident.last_seen = event.timestamp
-                        self.db.commit()
-                        self.db.refresh(active_incident)
-                elif active_incident and not active_incident.last_seen:
-                    active_incident.last_seen = event.timestamp
-                    self.db.commit()
-                    self.db.refresh(active_incident)
+            incident = self._create_incident_from_alert(
+                alert=alert,
+                event=event,
+            )
+
+            if incident:
+                correlated_incidents.append(incident)
+                self._broadcast_incident(incident)
+
+        self.db.commit()
+
+        escalations = []
+        for incident_id in dict.fromkeys(
+            incident.id for incident in correlated_incidents
+        ):
+            try:
+                escalation = RecurrenceService(self.db).detect_and_escalate(
+                    incident_id
+                )
+                if escalation:
+                    escalations.append(escalation)
+            except Exception as exc:
+                print(
+                    "[Recurrence] Escalation processing failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        response_processing = []
+        if settings.automatic_response_enabled:
+            for incident_id in dict.fromkeys(
+                incident.id for incident in correlated_incidents
+            ):
+                try:
+                    outcome = ResponseService().process_incident(
+                        self.db,
+                        incident_id,
+                        automatic=True,
+                    )
+                    response_processing.append(outcome)
+                except Exception as exc:
+                    # Response automation is deliberately isolated from the
+                    # telemetry/detection/correlation transaction.
+                    response_processing.append({
+                        "incident_id": incident_id,
+                        "status": "failed",
+                        "failure": {
+                            "stage": "orchestration",
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                    })
 
         return {
-            "event": {
-                "id": event.id,
-                "timestamp": event.timestamp.isoformat(),
-                "host": event.host,
-                "source_ip": event.source_ip,
-                "event_type": event.event_type,
-                "username": event.username,
-                "severity": event.severity,
-            },
+            "event": event,
+            "alerts": created_alerts,
             "alerts_created": len(created_alerts),
-            "incidents": incidents
+            "incidents": [
+                self._serialize_incident(incident)
+                for incident in correlated_incidents
+            ],
+            "incidents_created": len(correlated_incidents),
+            "response_processing": response_processing,
+            "escalations": escalations,
         }
 
-    def process_batch(self, batch: EventBatch) -> dict:
-        """Process a batch of events through the full pipeline."""
-        results = {
-            "total": len(batch.events),
-            "successful": 0,
-            "failed": 0,
-            "alerts_created": 0,
-            "incidents_created": 0,
-            "incident_ids": set(),
-            "errors": []
-        }
+    # =========================================================================
+    # BATCH PROCESSING
+    # =========================================================================
 
-        for i, event_data in enumerate(batch.events):
-            try:
-                # Create event
-                event = self.create_event(event_data)
+    def process_batch(
+        self,
+        batch: EventBatch,
+    ):
+        """
+        Process multiple events.
+        """
 
-                # Run detection
-                engine = DetectionEngine(self.db)
-                alerts = engine.process_event(event)
+        results = []
 
-                # Create alerts
-                for alert_data in alerts:
-                    alert = self._create_alert(alert_data)
-                    results["alerts_created"] += 1
-                    self._broadcast_alert(alert)
-
-                    # Create/update incident
-                    incident = self._create_incident_from_alert(alert)
-                    if incident:
-                        alert.incident_id = incident.id
-                        self.db.commit()
-                        self.db.refresh(alert)
-
-                        if incident.id not in results["incident_ids"]:
-                            results["incident_ids"].add(incident.id)
-                            self._broadcast_incident(incident)
-
-                if not alerts and event.source_ip and event.timestamp:
-                    active_incident = self.db.query(Incident).filter(
-                        Incident.status.in_(["open", "investigating"]),
-                        Incident.source_entities.contains([event.source_ip])
-                    ).order_by(Incident.last_seen.desc()).first()
-                    if active_incident and active_incident.last_seen:
-                        window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
-                        gap = (event.timestamp - active_incident.last_seen).total_seconds()
-                        if 0 <= gap <= window_seconds:
-                            active_incident.last_seen = event.timestamp
-                            self.db.commit()
-                            self.db.refresh(active_incident)
-                    elif active_incident and not active_incident.last_seen:
-                        active_incident.last_seen = event.timestamp
-                        self.db.commit()
-                        self.db.refresh(active_incident)
-
-                results["successful"] += 1
-
-            except Exception as e:
-                results["failed"] += 1
-                results["errors"].append({
-                    "index": i,
-                    "error": str(e),
-                    "event_type": event_data.event_type
-                })
-
-        # Convert set to list for JSON serialization
-        results["incidents_created"] = len(results["incident_ids"])
-        results["incident_ids"] = list(results["incident_ids"])
-        results["status"] = "success" if results["failed"] == 0 else "partial"
+        for event_data in batch.events:
+            result = self.process_event(
+                event_data
+            )
+            results.append(result)
 
         return results
 
-    # ===== Private helper methods =====
+    # =========================================================================
+    # ALERT CREATION
+    # =========================================================================
 
-    def _create_alert(self, alert_data) -> Alert:
-        """Create and persist an alert."""
-        # Set created_at from earliest evidence event timestamp if available
-        alert_created_at = datetime.utcnow()
-        if alert_data.evidence:
-            ev_first = self.db.query(Event).filter(Event.id.in_(alert_data.evidence)).order_by(Event.timestamp.asc()).first()
-            if ev_first and ev_first.timestamp:
-                alert_created_at = ev_first.timestamp
+    def _create_alert(
+        self,
+        event: Event,
+        alert_data,
+    ):
+        """
+        Create an Alert from detection output.
+
+        Alert timestamps are stored as UTC.
+        """
+
+        alert_created_at = utc_now()
+
+        # ---------------------------------------------------------------------
+        # Determine timestamp from evidence when available.
+        # ---------------------------------------------------------------------
+
+        evidence = getattr(
+            alert_data,
+            "evidence",
+            None,
+        )
+
+        if evidence:
+
+            evidence_ids = []
+
+            for evidence_item in evidence:
+
+                if isinstance(
+                    evidence_item,
+                    dict,
+                ):
+
+                    event_id = evidence_item.get(
+                        "event_id"
+                    )
+
+                    if event_id:
+                        evidence_ids.append(
+                            event_id
+                        )
+
+                elif isinstance(
+                    evidence_item,
+                    str,
+                ):
+
+                    evidence_ids.append(
+                        evidence_item
+                    )
+
+            if evidence_ids:
+
+                evidence_events = (
+                    self.db.query(Event)
+                    .filter(
+                        Event.id.in_(evidence_ids)
+                    )
+                    .all()
+                )
+
+                timestamps = [
+                    ev.timestamp
+                    for ev in evidence_events
+                    if ev.timestamp
+                ]
+
+                if timestamps:
+                    alert_created_at = min(
+                        timestamps
+                    )
+
+        severity = self._enum_or_value(
+            getattr(
+                alert_data,
+                "severity",
+                None,
+            )
+        )
 
         alert = Alert(
-            id=str(uuid.uuid4()),
             alert_type=alert_data.alert_type,
-            severity=alert_data.severity.value,
-            mitre_technique=alert_data.mitre_technique,
-            source_ip=alert_data.source_ip,
-            target_host=alert_data.target_host,
             description=alert_data.description,
-            evidence=alert_data.evidence,
+            severity=severity,
             confidence=alert_data.confidence,
-            created_at=alert_created_at
+            mitre_technique=getattr(
+                alert_data,
+                "mitre_technique",
+                None,
+            ),
+            evidence=evidence,
+            source_ip=event.source_ip,
+            target_host=event.host,
+            incident_id=None,
+            created_at=alert_created_at,
         )
+
         self.db.add(alert)
-        self.db.commit()
-        self.db.refresh(alert)
+        self.db.flush()
+
         return alert
 
-    def _broadcast_alert(self, alert: Alert):
-        """Broadcast alert via WebSocket."""
-        try:
-            alert_dict = {
-                "id": alert.id,
+    # =========================================================================
+    # INCIDENT CORRELATION
+    # =========================================================================
+
+    def _create_incident_from_alert(
+        self,
+        alert: Alert,
+        event: Event,
+    ):
+        """
+        Correlate an alert with an existing incident.
+
+        If no suitable incident exists, create a new one.
+        """
+
+        alert_time = (
+            alert.created_at
+            or utc_now()
+        )
+
+        window_seconds = getattr(
+            settings,
+            "incident_correlation_window_seconds",
+            300,
+        )
+
+        existing = None
+
+        # ---------------------------------------------------------------------
+        # Find active incident from same source IP.
+        # ---------------------------------------------------------------------
+
+        if event.source_ip:
+
+            candidates = (
+                self.db.query(Incident)
+                .filter(
+                    Incident.status.in_(
+                        [
+                            "open",
+                            "investigating",
+                            "contained",
+                        ]
+                    )
+                )
+                .order_by(
+                    Incident.last_seen.desc()
+                )
+                .all()
+            )
+
+            for candidate in candidates:
+
+                if not candidate.source_entities:
+                    continue
+
+                if (
+                    event.source_ip
+                    not in candidate.source_entities
+                ):
+                    continue
+
+                if not candidate.last_seen:
+                    continue
+
+                gap = (
+                    alert_time
+                    - candidate.last_seen
+                ).total_seconds()
+
+                # Duplicate or delayed telemetry can produce an alert whose
+                # evidence timestamp falls inside the incident interval.
+                if (
+                    candidate.first_seen
+                    and candidate.first_seen
+                    <= alert_time
+                    <= candidate.last_seen
+                ):
+                    existing = candidate
+                    break
+
+                # Normal forward correlation.
+                if (
+                    0
+                    <= gap
+                    <= window_seconds
+                ):
+                    existing = candidate
+                    break
+
+                # Event has an earlier timestamp.
+                if gap < 0:
+
+                    if not candidate.first_seen:
+                        continue
+
+                    reverse_gap = (
+                        candidate.first_seen
+                        - alert_time
+                    ).total_seconds()
+
+                    if (
+                        0
+                        <= reverse_gap
+                        <= window_seconds
+                    ):
+                        existing = candidate
+                        break
+
+        # ---------------------------------------------------------------------
+        # Existing incident.
+        # ---------------------------------------------------------------------
+
+        if existing:
+
+            self._update_incident(
+                incident=existing,
+                alert=alert,
+                event=event,
+            )
+
+            alert.incident_id = existing.id
+
+            self.db.flush()
+
+            return existing
+
+        # ---------------------------------------------------------------------
+        # New incident.
+        # ---------------------------------------------------------------------
+
+        return self._create_new_incident(
+            alert=alert,
+            event=event,
+        )
+
+    # =========================================================================
+    # UPDATE INCIDENT
+    # =========================================================================
+
+    def _update_incident(
+        self,
+        incident: Incident,
+        alert: Alert,
+        event: Event,
+    ):
+        """
+        Add an alert/event to an existing incident.
+        """
+
+        alert_time = (
+            alert.created_at
+            or event.timestamp
+            or utc_now()
+        )
+
+        # ---------------------------------------------------------------------
+        # First / last seen
+        # ---------------------------------------------------------------------
+
+        if incident.first_seen is None:
+            incident.first_seen = alert_time
+
+        if incident.last_seen is None:
+            incident.last_seen = alert_time
+
+        else:
+
+            if alert_time > incident.last_seen:
+                incident.last_seen = alert_time
+
+            if alert_time < incident.first_seen:
+                incident.first_seen = alert_time
+
+        # ---------------------------------------------------------------------
+        # Source entities
+        # ---------------------------------------------------------------------
+
+        source_entities = list(
+            incident.source_entities or []
+        )
+
+        if event.source_ip:
+
+            if (
+                event.source_ip
+                not in source_entities
+            ):
+                source_entities.append(
+                    event.source_ip
+                )
+
+        incident.source_entities = source_entities
+
+        # ---------------------------------------------------------------------
+        # Target entities
+        # ---------------------------------------------------------------------
+
+        target_entities = list(
+            incident.target_entities or []
+        )
+
+        if event.host:
+
+            if event.host not in target_entities:
+                target_entities.append(
+                    event.host
+                )
+
+        incident.target_entities = target_entities
+
+        # ---------------------------------------------------------------------
+        # MITRE ATT&CK
+        # ---------------------------------------------------------------------
+
+        mitre_techniques = list(
+            incident.mitre_techniques or []
+        )
+
+        if alert.mitre_technique:
+
+            if (
+                alert.mitre_technique
+                not in mitre_techniques
+            ):
+                mitre_techniques.append(
+                    alert.mitre_technique
+                )
+
+        incident.mitre_techniques = (
+            mitre_techniques
+        )
+
+        # ---------------------------------------------------------------------
+        # Attack chain
+        #
+        # Stored timestamps remain UTC.
+        # ---------------------------------------------------------------------
+
+        attack_chain = list(
+            incident.attack_chain or []
+        )
+
+        attack_chain.append(
+            {
+                "alert_id": alert.id,
                 "alert_type": alert.alert_type,
-                "severity": alert.severity,
-                "mitre_technique": alert.mitre_technique,
-                "source_ip": alert.source_ip,
-                "target_host": alert.target_host,
-                "description": alert.description,
-                "confidence": alert.confidence,
-                "created_at": alert.created_at.isoformat()
+                "timestamp": (
+                    alert_time.isoformat()
+                    if alert_time
+                    else None
+                ),
+                "mitre_technique": (
+                    alert.mitre_technique
+                ),
             }
-            asyncio.create_task(broadcast_new_alert(alert_dict))
-            print(f"[WebSocket] Broadcasted alert: {alert.alert_type}")
-        except Exception as e:
-            print(f"[WebSocket] Failed to broadcast alert: {e}")
+        )
 
-    def _broadcast_incident(self, incident: Incident):
-        """Broadcast incident via WebSocket."""
+        incident.attack_chain = attack_chain
+
+        # ---------------------------------------------------------------------
+        # Severity escalation
+        # ---------------------------------------------------------------------
+
+        severity_order = {
+            "low": 1,
+            "medium": 2,
+            "high": 3,
+            "critical": 4,
+        }
+
+        current_severity = (
+            self._enum_or_value(
+                incident.severity
+            )
+            or "medium"
+        )
+
+        alert_severity = (
+            self._enum_or_value(
+                alert.severity
+            )
+            or "medium"
+        )
+
+        if (
+            severity_order.get(
+                alert_severity,
+                0,
+            )
+            > severity_order.get(
+                current_severity,
+                0,
+            )
+        ):
+            incident.severity = alert_severity
+
+        # ---------------------------------------------------------------------
+        # Confidence
+        # ---------------------------------------------------------------------
+
+        if alert.confidence is not None:
+
+            current_confidence = (
+                incident.confidence
+                or 0.0
+            )
+
+            incident.confidence = max(
+                current_confidence,
+                alert.confidence,
+            )
+
+        self.db.flush()
+
+    # =========================================================================
+    # CREATE NEW INCIDENT
+    # =========================================================================
+
+    def _create_new_incident(
+        self,
+        alert: Alert,
+        event: Event,
+    ):
+        """
+        Create a new incident from an alert.
+        """
+
+        alert_time = (
+            alert.created_at
+            or event.timestamp
+            or utc_now()
+        )
+
+        severity = (
+            self._enum_or_value(
+                alert.severity
+            )
+            or "medium"
+        )
+
+        confidence = (
+            alert.confidence
+            if alert.confidence is not None
+            else 0.0
+        )
+
+        # ---------------------------------------------------------------------
+        # Source entities
+        # ---------------------------------------------------------------------
+
+        source_entities = []
+
+        if event.source_ip:
+            source_entities.append(
+                event.source_ip
+            )
+
+        # ---------------------------------------------------------------------
+        # Target entities
+        # ---------------------------------------------------------------------
+
+        target_entities = []
+
+        if event.host:
+            target_entities.append(
+                event.host
+            )
+
+        # ---------------------------------------------------------------------
+        # MITRE techniques
+        # ---------------------------------------------------------------------
+
+        mitre_techniques = []
+
+        if alert.mitre_technique:
+            mitre_techniques.append(
+                alert.mitre_technique
+            )
+
+        # ---------------------------------------------------------------------
+        # Attack chain
+        # ---------------------------------------------------------------------
+
+        attack_chain = [
+            {
+                "alert_id": alert.id,
+                "alert_type": alert.alert_type,
+                "timestamp": (
+                    alert_time.isoformat()
+                    if alert_time
+                    else None
+                ),
+                "mitre_technique": (
+                    alert.mitre_technique
+                ),
+            }
+        ]
+
+        incident = Incident(
+            title=(
+                f"{alert.alert_type} "
+                f"detected on {event.host}"
+            ),
+            severity=severity,
+            status="open",
+            confidence=confidence,
+            source_entities=source_entities,
+            target_entities=target_entities,
+            attack_chain=attack_chain,
+            mitre_techniques=mitre_techniques,
+            first_seen=alert_time,
+            last_seen=alert_time,
+            resolved_at=None,
+            ai_summary=None,
+            recommendations=[],
+        )
+
+        self.db.add(incident)
+        self.db.flush()
+
+        # Associate alert with incident.
+        alert.incident_id = incident.id
+
+        self.db.flush()
+
+        return incident
+
+    # =========================================================================
+    # BROADCAST ALERT
+    # =========================================================================
+
+    def _broadcast_alert(
+        self,
+        alert: Alert,
+    ):
+        """
+        Broadcast alert to connected WebSocket clients.
+        """
+
         try:
-            incident_dict = {
-                "id": incident.id,
-                "title": incident.title,
-                "severity": incident.severity,
-                "confidence": incident.confidence,
-                "status": incident.status,
-                "source_entities": incident.source_entities,
-                "target_entities": incident.target_entities,
-                "mitre_techniques": incident.mitre_techniques,
-                "first_seen": incident.first_seen.isoformat() if incident.first_seen else None,
-                "last_seen": incident.last_seen.isoformat() if incident.last_seen else None,
-                "alert_count": 1
-            }
-            asyncio.create_task(broadcast_new_incident(incident_dict))
-            print(f"[WebSocket] Broadcasted incident: {incident.title}")
-        except Exception as e:
-            print(f"[WebSocket] Failed to broadcast incident: {e}")
 
-    def _serialize_incident(self, incident: Incident) -> dict:
-        """Serialize incident for API response."""
+            from app.api.websocket import manager
+
+            payload = {
+                "type": "alert",
+                "data": {
+                    "id": alert.id,
+                    "alert_type": alert.alert_type,
+                    "description": alert.description,
+
+                    "severity": self._enum_or_value(
+                        alert.severity
+                    ),
+
+                    "confidence": alert.confidence,
+
+                    "mitre_technique": (
+                        alert.mitre_technique
+                    ),
+
+                    "source_ip": alert.source_ip,
+                    "target_host": alert.target_host,
+                    "incident_id": alert.incident_id,
+
+                    "created_at": utc_iso(
+                        alert.created_at
+                    ),
+                },
+            }
+
+            manager.broadcast_sync(
+                payload
+            )
+
+        except Exception as e:
+
+            print(
+                "[EventService] "
+                f"Alert broadcast error: {e}"
+            )
+
+    # =========================================================================
+    # BROADCAST INCIDENT
+    # =========================================================================
+
+    def _broadcast_incident(
+        self,
+        incident: Incident,
+    ):
+        """
+        Broadcast incident update to connected clients.
+        """
+
+        try:
+
+            from app.api.websocket import manager
+
+            payload = {
+                "type": "incident",
+                "data": self._serialize_incident(
+                    incident
+                ),
+            }
+
+            manager.broadcast_sync(
+                payload
+            )
+
+        except Exception as e:
+
+            print(
+                "[EventService] "
+                f"Incident broadcast error: {e}"
+            )
+
+    # =========================================================================
+    # INCIDENT SERIALIZATION
+    # =========================================================================
+
+    def _serialize_incident(
+        self,
+        incident: Incident,
+    ):
+        """
+        Serialize incident for WebSocket/API consumers.
+
+        API consumers receive timezone-aware UTC and localize for display.
+        """
+
         return {
             "id": incident.id,
             "title": incident.title,
-            "severity": incident.severity,
+            "description": getattr(
+                incident,
+                "description",
+                incident.title,
+            ),
+
+            "severity": self._enum_or_value(
+                incident.severity
+            ),
+
+            "status": self._enum_or_value(
+                incident.status
+            ),
+
             "confidence": incident.confidence,
-            "status": incident.status,
-            "source_entities": incident.source_entities,
-            "target_entities": incident.target_entities,
-            "mitre_techniques": incident.mitre_techniques,
-            "first_seen": incident.first_seen.isoformat() if incident.first_seen else None,
-            "last_seen": incident.last_seen.isoformat() if incident.last_seen else None,
+
+            "source_entities": (
+                incident.source_entities
+                or []
+            ),
+
+            "target_entities": (
+                incident.target_entities
+                or []
+            ),
+
+            "attack_chain": (
+                incident.attack_chain
+                or []
+            ),
+
+            "mitre_techniques": (
+                incident.mitre_techniques
+                or []
+            ),
+
+            "first_seen": utc_iso(
+                incident.first_seen
+            ),
+
+            "last_seen": utc_iso(
+                incident.last_seen
+            ),
+
+            "resolved_at": utc_iso(
+                incident.resolved_at
+            ),
         }
-
-    def _create_incident_from_alert(self, alert: Alert) -> Optional[Incident]:
-        """Create or update an incident from a single alert within the correlation window."""
-        # Determine effective alert timestamp (from alert or its earliest evidence)
-        alert_time = alert.created_at or datetime.utcnow()
-        if alert.evidence:
-            ev_first = self.db.query(Event).filter(Event.id.in_(alert.evidence)).order_by(Event.timestamp.asc()).first()
-            if ev_first and ev_first.timestamp:
-                alert_time = ev_first.timestamp
-
-        # Look for existing open/investigating incident for this source IP
-        window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
-        existing = self.db.query(Incident).filter(
-            Incident.status.in_(["open", "investigating"]),
-            Incident.source_entities.contains([alert.source_ip])
-        ).order_by(Incident.last_seen.desc()).first()
-
-        if existing and existing.last_seen:
-            # Check if alert occurs within the correlation window of the incident's last_seen
-            # or if the gap exceeds the inactivity window threshold
-            gap = (alert_time - existing.last_seen).total_seconds()
-            if 0 <= gap <= window_seconds:
-                return self._update_incident(existing, alert)
-            elif gap < 0:
-                # Alert is in the past; only merge if within window before first_seen
-                if existing.first_seen and (existing.first_seen - alert_time).total_seconds() <= window_seconds:
-                    return self._update_incident(existing, alert)
-            # Gap exceeds window -> do not merge into old incident, start a new incident!
-        elif existing:
-            return self._update_incident(existing, alert)
-
-        return self._create_new_incident(alert)
-
-    def _update_incident(self, incident: Incident, alert: Alert) -> Incident:
-        """Update an existing incident with a new alert."""
-        # Update last_seen: max of current last_seen, alert created_at, and alert evidence timestamps
-        latest_ts = alert.created_at
-        if alert.evidence:
-            evidence_events = self.db.query(Event).filter(Event.id.in_(alert.evidence)).all()
-            for ev in evidence_events:
-                if ev.timestamp and (not latest_ts or ev.timestamp > latest_ts):
-                    latest_ts = ev.timestamp
-
-        if not incident.last_seen or (latest_ts and latest_ts > incident.last_seen):
-            incident.last_seen = latest_ts
-
-        # Add MITRE technique if not already present
-        if alert.mitre_technique:
-            current_techniques = incident.mitre_techniques or []
-            if alert.mitre_technique not in current_techniques:
-                incident.mitre_techniques = current_techniques + [alert.mitre_technique]
-
-        # Add attack chain entry if this stage doesn't exist
-        current_chain = incident.attack_chain or []
-        stage_name = self._get_stage_from_alert(alert)
-        existing_stages = [s.get("stage") for s in current_chain]
-        if stage_name not in existing_stages:
-            current_chain.append({
-                "stage": stage_name,
-                "description": alert.description,
-                "timestamp": alert.created_at.isoformat() if alert.created_at else None,
-                "technique_id": alert.mitre_technique
-            })
-            incident.attack_chain = current_chain
-
-        # Escalate severity if needed
-        severity_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-        if severity_order.get(alert.severity, 0) > severity_order.get(incident.severity, 0):
-            incident.severity = alert.severity
-
-        # Update confidence (take max)
-        if alert.confidence and alert.confidence > (incident.confidence or 0):
-            incident.confidence = alert.confidence
-
-        self.db.commit()
-        self.db.refresh(incident)
-        return incident
-
-    def _create_new_incident(self, alert: Alert) -> Incident:
-        """Create a new incident from an alert."""
-        earliest_ts = alert.created_at
-        latest_ts = alert.created_at
-        if alert.evidence:
-            evidence_events = self.db.query(Event).filter(Event.id.in_(alert.evidence)).all()
-            for ev in evidence_events:
-                if ev.timestamp:
-                    if not earliest_ts or ev.timestamp < earliest_ts:
-                        earliest_ts = ev.timestamp
-                    if not latest_ts or ev.timestamp > latest_ts:
-                        latest_ts = ev.timestamp
-
-        incident = Incident(
-            id=str(uuid.uuid4()),
-            title=f"{alert.alert_type.replace('_', ' ').title()} from {alert.source_ip}",
-            severity=alert.severity,
-            confidence=alert.confidence,
-            status="open",
-            source_entities=[alert.source_ip] if alert.source_ip else [],
-            target_entities=[alert.target_host] if alert.target_host else [],
-            attack_chain=[{
-                "stage": self._get_stage_from_alert(alert),
-                "description": alert.description,
-                "timestamp": alert.created_at.isoformat() if alert.created_at else None,
-                "technique_id": alert.mitre_technique
-            }],
-            mitre_techniques=[alert.mitre_technique] if alert.mitre_technique else [],
-            first_seen=earliest_ts,
-            last_seen=latest_ts,
-            recommendations=[]
-        )
-        self.db.add(incident)
-        self.db.commit()
-        self.db.refresh(incident)
-        return incident
-
-    def _get_stage_from_alert(self, alert: Alert) -> str:
-        """Determine attack stage from alert type."""
-        alert_type = (alert.alert_type or "").lower()
-        raw = (alert.description or "").lower()
-
-        if "port_scan" in alert_type or "scan" in raw:
-            return "Reconnaissance"
-        elif "brute_force" in alert_type:
-            return "Credential Access"
-        elif "successful_login" in alert_type:
-            return "Initial Access"
-        elif "suspicious_command" in alert_type:
-            return "Execution"
-        elif "privilege" in alert_type or "escalation" in raw:
-            return "Privilege Escalation"
-        else:
-            return "Unknown"

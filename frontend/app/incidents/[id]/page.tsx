@@ -146,7 +146,7 @@ export default function IncidentInvestigationPage() {
     setStatusUpdating(true)
     try {
       const updated = await api.updateIncidentStatus(id, newStatus)
-      setDetail({ ...detail, incident: { ...detail.incident, status: updated.status } })
+      setDetail({ ...detail, incident: updated.incident })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update status.')
     } finally {
@@ -238,6 +238,33 @@ export default function IncidentInvestigationPage() {
             </div>
           )}
 
+          {detail.escalation?.requires_human_review && (
+            <section className="panel mb-4 border-danger">
+              <div className="panel-header">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-danger" />
+                  <h2>HUMAN REVIEW REQUIRED</h2>
+                </div>
+                <span className="font-mono text-[10px] text-muted">
+                  SOC notification: {titleCase(detail.escalation.slack_notification_status)}
+                </span>
+              </div>
+              <div className="p-4">
+                <p className="text-[12px] text-text mb-3">{detail.escalation.reason}</p>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-[11px]">
+                  <div><span className="text-muted block">Source</span><strong className="font-mono">{detail.escalation.source_ip}</strong></div>
+                  <div><span className="text-muted block">Target</span><strong className="font-mono">{detail.escalation.target ?? 'Unknown'}</strong></div>
+                  <div><span className="text-muted block">Recurrence count</span><strong className="font-mono">{detail.escalation.recurrence_count}</strong></div>
+                  <div><span className="text-muted block">Status</span><strong className="font-mono">{detail.escalation.status}</strong></div>
+                  <div><span className="text-muted block">Previous action</span><strong className="font-mono">{titleCase(detail.escalation.previous_action)}</strong></div>
+                  <div><span className="text-muted block">Previous verification</span><strong className="font-mono">{formatDate(detail.escalation.previous_verification_at)}</strong></div>
+                  <div><span className="text-muted block">Current activity</span><strong className="font-mono">{formatDate(detail.escalation.last_activity_at)}</strong></div>
+                  <div><span className="text-muted block">Assigned analyst</span><strong className="font-mono">{detail.escalation.assigned_to ?? 'Unassigned'}</strong></div>
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* Metric Cards */}
           <section className="metric-grid mb-4">
             <article className="metric-card-clean">
@@ -297,7 +324,7 @@ export default function IncidentInvestigationPage() {
                       OBSERVED EVIDENCE
                     </span>
                     <div className="space-y-1">
-                      {(analysis.observed_evidence || analysis.evidence_list || []).map((ev, i) => (
+                      {analysis.findings.map((ev, i) => (
                         <div key={i} className="text-[11.5px] font-mono text-text">
                           • {ev}
                         </div>
@@ -310,7 +337,7 @@ export default function IncidentInvestigationPage() {
                       ANALYST ASSESSMENT
                     </span>
                     <p className="text-[12px] text-text bg-surface-raised p-2.5 rounded border border-border leading-relaxed">
-                      {analysis.attack_explanation || analysis.summary}
+                      {analysis.attack_narrative || analysis.summary}
                     </p>
                   </div>
 
@@ -319,14 +346,9 @@ export default function IncidentInvestigationPage() {
                       RECOMMENDED INVESTIGATION &amp; CONTAINMENT
                     </span>
                     <div className="space-y-1 font-mono text-[11.5px]">
-                      {(analysis.investigation_steps || []).map((step, i) => (
+                      {analysis.recommendations.map((step, i) => (
                         <div key={i} className="text-muted">
-                          [Investigate] {step}
-                        </div>
-                      ))}
-                      {(analysis.containment_steps || []).map((step, i) => (
-                        <div key={i} className="text-sev-high">
-                          [Containment Recommendation] {step}
+                          {step}
                         </div>
                       ))}
                     </div>

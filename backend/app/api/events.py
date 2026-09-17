@@ -25,7 +25,7 @@ async def create_event(
 
     return {
         "status": "success",
-        "event_id": result["event"]["id"],
+        "event_id": result["event"].id,
         "alerts_created": result["alerts_created"],
         "incidents": result["incidents"]
     }

@@ -1,6 +1,12 @@
 from typing import Dict, Any, List, Optional
-from datetime import datetime
 import uuid
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.core.trace_ai import TraceAI
+from app.core.time import utc_iso, utc_now
+from app.models.database import Alert, Incident, Response as ResponseDB
 from app.models.response_models import (
     ActionType, RiskLevel, ExecutionStatus,
     ResponsePlaybook, ResponsePolicy, ResponseProposal,
@@ -31,6 +37,345 @@ class ResponseService:
         self.disabled_accounts: Dict[str, Dict[str, Any]] = {}
         self.isolated_endpoints: Dict[str, Dict[str, Any]] = {}
         self.applied_mitigations: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _pipeline_record_id(incident_id: str) -> str:
+        """Stable database key for one response pipeline run per incident."""
+        identity = (
+            f"threatlens-response:{settings.response_pipeline_version}:"
+            f"{incident_id}"
+        )
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+
+    def _restore_persisted_outcome(self, details: Dict[str, Any]) -> None:
+        """Hydrate process-local indexes from the durable response ledger."""
+        proposal_data = details.get("proposal")
+        execution_data = details.get("execution")
+        audit_data = details.get("audit")
+
+        if proposal_data:
+            proposal = ResponseProposal.model_validate(proposal_data)
+            self.proposals[proposal.incident_id] = proposal
+        if execution_data:
+            execution = ResponseExecutionRecord.model_validate(execution_data)
+            self.executions[execution.execution_id] = execution
+        if audit_data:
+            audit = ResponseAuditEntry.model_validate(audit_data)
+            if not any(item.id == audit.id for item in self.audit_log):
+                self.audit_log.insert(0, audit)
+
+    def load_persisted_outcomes(self, db: Session) -> None:
+        """Load durable proposals, executions, and audits into API indexes."""
+        for ledger in db.query(ResponseDB).all():
+            if ledger.details:
+                self._restore_persisted_outcome(ledger.details)
+
+    def process_incident(
+        self,
+        db: Session,
+        incident_id: str,
+        *,
+        automatic: bool,
+        execute_eligible: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Run the bounded incident response pipeline exactly once.
+
+        The deterministic Response primary key is the database-level
+        idempotency claim. It survives process restarts and rejects concurrent
+        claims before any playbook can execute.
+        """
+        record_id = self._pipeline_record_id(incident_id)
+        existing = db.get(ResponseDB, record_id)
+        if existing is not None:
+            details = existing.details or {}
+            if existing.status in {"completed", "failed", "processing"}:
+                self._restore_persisted_outcome(details)
+                return details
+
+            incident = db.get(Incident, incident_id)
+            current_marker = utc_iso(incident.last_seen) if incident else None
+            if current_marker == details.get("incident_last_seen"):
+                self._restore_persisted_outcome(details)
+                return details
+
+            previous_status = existing.status
+            claimed = (
+                db.query(ResponseDB)
+                .filter(
+                    ResponseDB.id == record_id,
+                    ResponseDB.status == previous_status,
+                )
+                .update({ResponseDB.status: "processing"})
+            )
+            db.commit()
+            if claimed != 1:
+                current = db.get(ResponseDB, record_id)
+                return current.details if current and current.details else {}
+            ledger = db.get(ResponseDB, record_id)
+        else:
+            ledger = ResponseDB(
+                id=record_id,
+                incident_id=incident_id,
+                action="response_pipeline",
+                status="processing",
+                performed_by="response_agent_auto" if automatic else "analyst",
+                details={
+                    "incident_id": incident_id,
+                    "pipeline_version": settings.response_pipeline_version,
+                    "automatic": automatic,
+                    "status": "processing",
+                    "started_at": utc_iso(utc_now()),
+                },
+            )
+            db.add(ledger)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = db.get(ResponseDB, record_id)
+                details = existing.details if existing and existing.details else {}
+                self._restore_persisted_outcome(details)
+                return details
+
+        stage = "incident_lookup"
+        try:
+            incident = db.get(Incident, incident_id)
+            if incident is None:
+                raise ValueError(f"Incident {incident_id} not found")
+
+            alerts = (
+                db.query(Alert)
+                .filter(Alert.incident_id == incident_id)
+                .order_by(Alert.created_at.asc())
+                .all()
+            )
+
+            stage = "trace_ai"
+            trace = TraceAI(db).reconstruct_incident(incident_id)
+            if trace is None:
+                raise ValueError("TraceAI could not reconstruct the incident")
+
+            stage = "evidence_package"
+            evidence_package = {
+                "incident_id": incident_id,
+                "alert_ids": [alert.id for alert in alerts],
+                "event_count": trace.get("event_count", 0),
+                "alert_count": trace.get("alert_count", len(alerts)),
+                "timeline": trace.get("timeline", []),
+                "stages": trace.get("stages", []),
+                "entities": trace.get("entities", {}),
+                "mitre_techniques": trace.get("mitre_techniques", []),
+            }
+
+            stage = "response_agent"
+            proposed = self.formulate_proposal(incident, alerts, trace)
+
+            stage = "proposal_validation"
+            proposal = ResponseProposal.model_validate(
+                proposed.model_dump(mode="python")
+            )
+
+            stage = "playbook_validation"
+            playbook = self.playbooks.get(proposal.playbook_id)
+            if playbook is None or not playbook.enabled:
+                raise ValueError(
+                    f"Predefined playbook {proposal.playbook_id} is unavailable"
+                )
+            if playbook.action_type != proposal.recommended_action:
+                raise ValueError("Proposal action does not match its playbook")
+
+            details: Dict[str, Any] = {
+                "incident_id": incident_id,
+                "pipeline_version": settings.response_pipeline_version,
+                "automatic": automatic,
+                "incident_last_seen": utc_iso(incident.last_seen),
+                "trace": trace,
+                "evidence_package": evidence_package,
+                "proposal": proposal.model_dump(mode="json"),
+                "policy": proposal.policy_evaluation.model_dump(mode="json"),
+                "playbook": playbook.model_dump(mode="json"),
+                "started_at": ledger.details["started_at"],
+            }
+
+            policy = proposal.policy_evaluation
+            if not policy.allowed:
+                details["status"] = "policy_denied"
+                ledger.status = "policy_denied"
+            elif policy.requires_approval or not policy.auto_execute:
+                details["status"] = "awaiting_approval"
+                ledger.status = "awaiting_approval"
+            elif not execute_eligible:
+                details["status"] = "proposed"
+                ledger.status = "proposed"
+            else:
+                stage = "playbook_execution"
+                execution = self.execute_action(
+                    incident_id=incident_id,
+                    action=proposal.recommended_action,
+                    target=proposal.target,
+                    playbook_id=proposal.playbook_id,
+                    dry_run=(
+                        settings.automatic_response_dry_run
+                        if automatic
+                        else True
+                    ),
+                    approved_by="policy_engine" if automatic else "analyst",
+                )
+                audit = next(
+                    entry
+                    for entry in self.audit_log
+                    if entry.incident_id == incident_id
+                    and entry.action == proposal.recommended_action
+                )
+                details.update({
+                    "status": "completed",
+                    "execution": execution.model_dump(mode="json"),
+                    "verification": execution.verification_result,
+                    "audit": audit.model_dump(mode="json"),
+                })
+                ledger.action = proposal.recommended_action.value
+                ledger.status = "completed"
+
+            details["completed_at"] = utc_iso(utc_now())
+            ledger.details = details
+            db.commit()
+            return details
+        except Exception as exc:
+            db.rollback()
+            ledger = db.get(ResponseDB, record_id)
+            failure = {
+                "incident_id": incident_id,
+                "pipeline_version": settings.response_pipeline_version,
+                "automatic": automatic,
+                "status": "failed",
+                "failure": {
+                    "stage": stage,
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "timestamp": utc_iso(utc_now()),
+                },
+            }
+            if ledger is not None:
+                ledger.status = "failed"
+                ledger.details = failure
+                db.commit()
+            return failure
+
+    def execute_action_once(
+        self,
+        db: Session,
+        *,
+        incident_id: str,
+        action: ActionType,
+        target: str,
+        playbook_id: Optional[str],
+        dry_run: bool,
+        approved_by: str,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> ResponseExecutionRecord:
+        """Execute one manual intent once, including across retries/restarts."""
+        automatic_ledger = db.get(
+            ResponseDB,
+            self._pipeline_record_id(incident_id),
+        )
+        if automatic_ledger and automatic_ledger.details:
+            prior_data = automatic_ledger.details.get("execution")
+            if prior_data:
+                prior = ResponseExecutionRecord.model_validate(prior_data)
+                if (
+                    prior.action == action
+                    and prior.target == target
+                    and prior.playbook_id == (playbook_id or prior.playbook_id)
+                    and prior.dry_run == dry_run
+                ):
+                    self.executions[prior.execution_id] = prior
+                    return prior
+
+        identity = ":".join([
+            "threatlens-manual-response",
+            settings.response_pipeline_version,
+            incident_id,
+            action.value,
+            target,
+            playbook_id or "default",
+            str(dry_run).lower(),
+        ])
+        record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+        existing = db.get(ResponseDB, record_id)
+        if existing and existing.details and existing.details.get("execution"):
+            record = ResponseExecutionRecord.model_validate(
+                existing.details["execution"]
+            )
+            self.executions[record.execution_id] = record
+            return record
+
+        if existing is None:
+            existing = ResponseDB(
+                id=record_id,
+                incident_id=incident_id,
+                action=action.value,
+                status="processing",
+                performed_by=approved_by,
+                details={"status": "processing"},
+            )
+            db.add(existing)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = db.get(ResponseDB, record_id)
+                if (
+                    existing
+                    and existing.details
+                    and existing.details.get("execution")
+                ):
+                    return ResponseExecutionRecord.model_validate(
+                        existing.details["execution"]
+                    )
+                raise RuntimeError("Response execution is already in progress")
+        elif existing.status == "processing":
+            raise RuntimeError("Response execution is already in progress")
+
+        try:
+            record = self.execute_action(
+                incident_id=incident_id,
+                action=action,
+                target=target,
+                playbook_id=playbook_id,
+                dry_run=dry_run,
+                approved_by=approved_by,
+                parameters=parameters,
+            )
+            audit = next(
+                entry
+                for entry in self.audit_log
+                if entry.incident_id == incident_id
+                and entry.action == action
+            )
+            existing.status = "completed"
+            existing.details = {
+                "status": "completed",
+                "execution": record.model_dump(mode="json"),
+                "audit": audit.model_dump(mode="json"),
+            }
+            db.commit()
+            return record
+        except Exception as exc:
+            db.rollback()
+            existing = db.get(ResponseDB, record_id)
+            if existing is not None:
+                existing.status = "failed"
+                existing.details = {
+                    "status": "failed",
+                    "failure": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                        "timestamp": utc_iso(utc_now()),
+                    },
+                }
+                db.commit()
+            raise
 
     def _init_playbooks(self) -> Dict[str, ResponsePlaybook]:
         pbs = [
@@ -433,42 +778,43 @@ class ResponseService:
         parameters: Optional[Dict[str, Any]] = None
     ) -> ResponseExecutionRecord:
         execution_id = f"EXEC-{uuid.uuid4().hex[:8].upper()}"
-        pb_id = playbook_id or f"PB-{action.value.upper()}"
-        playbook = self.playbooks.get(pb_id) or self.playbooks.get("PB-BLOCK-IP")
+        if playbook_id:
+            playbook = self.playbooks.get(playbook_id)
+        else:
+            playbook = next(
+                (
+                    candidate
+                    for candidate in self.playbooks.values()
+                    if candidate.action_type == action and candidate.enabled
+                ),
+                None,
+            )
+        if playbook is None or not playbook.enabled:
+            raise ValueError("No enabled predefined playbook matches this action")
+        if playbook.action_type != action:
+            raise ValueError("Requested action does not match the playbook")
+        pb_id = playbook.id
 
-        started_at = datetime.utcnow()
+        started_at = utc_now()
 
         # Idempotency check
         if action == ActionType.BLOCK_IP and target in self.blocked_ips and not dry_run:
-            return ResponseExecutionRecord(
-                execution_id=execution_id,
-                incident_id=incident_id,
-                playbook_id=pb_id,
-                action=action,
-                target=target,
-                requested_by="response_agent",
-                approved_by=approved_by,
-                started_at=started_at,
-                completed_at=datetime.utcnow(),
-                status=ExecutionStatus.VERIFIED,
-                dry_run=False,
-                result={
-                    "mode": "DEMO MODE (Simulated)",
-                    "idempotent": True,
-                    "message": f"Target IP {target} is already blocked in perimeter ACL.",
-                    "applied_rule": self.blocked_ips[target]
-                },
-                verification_result={
-                    "verified": True,
-                    "method": "Perimeter ACL check",
-                    "details": f"Drop rule for {target} active and confirmed.",
-                    "timestamp": datetime.utcnow().isoformat()
-                },
-                rollback_available=True
-            )
+            status = ExecutionStatus.VERIFIED
+            result = {
+                "mode": "DEMO MODE (Simulated)",
+                "idempotent": True,
+                "message": f"Target IP {target} is already blocked in perimeter ACL.",
+                "applied_rule": self.blocked_ips[target],
+            }
+            verification = {
+                "verified": True,
+                "method": "Perimeter ACL check",
+                "details": f"Drop rule for {target} active and confirmed.",
+                "timestamp": utc_iso(utc_now()),
+            }
 
         # Simulation execution logic
-        if dry_run:
+        elif dry_run:
             status = ExecutionStatus.EXECUTED
             result = {
                 "mode": "DRY RUN (Preview Only)",
@@ -481,7 +827,7 @@ class ResponseService:
                 "verified": True,
                 "method": "Dry-run validation",
                 "details": "Simulated dry-run verification completed successfully. No state altered.",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": utc_iso(utc_now())
             }
         else:
             status = ExecutionStatus.EXECUTED
@@ -509,7 +855,7 @@ class ResponseService:
                 "verified": True,
                 "method": playbook.verification_steps[0] if playbook and playbook.verification_steps else "Synthetic probe",
                 "details": f"Verification passed: No telemetry flows or unauthorized sessions detected from {target}.",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": utc_iso(utc_now())
             }
             status = ExecutionStatus.VERIFIED
 
@@ -522,7 +868,7 @@ class ResponseService:
             requested_by="response_agent",
             approved_by=approved_by,
             started_at=started_at,
-            completed_at=datetime.utcnow(),
+            completed_at=utc_now(),
             status=status,
             dry_run=dry_run,
             result=result,
@@ -535,7 +881,7 @@ class ResponseService:
         # Record to append-only audit log
         audit_entry = ResponseAuditEntry(
             id=f"AUD-{uuid.uuid4().hex[:8].upper()}",
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             incident_id=incident_id,
             agent="ThreatLens AI Response Agent",
             action=action,
@@ -572,7 +918,7 @@ class ResponseService:
         record.rollback_available = False
 
         rollback_details = {
-            "rolled_back_at": datetime.utcnow().isoformat(),
+            "rolled_back_at": utc_iso(utc_now()),
             "operator": operator,
             "restored_target": target,
             "message": f"Rollback successfully restored previous defensive state for {target}."
@@ -581,7 +927,7 @@ class ResponseService:
         # Audit rollback
         audit_entry = ResponseAuditEntry(
             id=f"AUD-{uuid.uuid4().hex[:8].upper()}",
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             incident_id=record.incident_id,
             agent="ThreatLens Rollback Controller",
             action=action,
@@ -631,4 +977,3 @@ class ResponseService:
                 "applied_mitigations": len(self.applied_mitigations)
             }
         }
-

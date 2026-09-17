@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Bell,
@@ -19,6 +19,7 @@ import {
   Shield,
   ShieldCheck,
   Bug,
+  MapPinned,
 } from 'lucide-react'
 import {
   api,
@@ -39,6 +40,7 @@ const nav = [
   { label: 'Alerts', href: '/alerts', icon: Bell },
   { label: 'Events', href: '/events', icon: Activity },
   { label: 'Network', href: '/network', icon: Network },
+  { label: 'Threat Map', href: '/threat-map', icon: MapPinned },
   { label: 'Detection Rules', href: '/detections', icon: ListChecks },
   { label: 'MITRE ATT&CK', href: '/mitre', icon: Crosshair },
   { label: 'Simulator', href: '/simulator', icon: Play },
@@ -65,6 +67,7 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const receivedMessages = useRef(new Set<string>())
 
   useEffect(() => {
     const saved = window.localStorage.getItem('threatlens-theme') || 'dark'
@@ -114,6 +117,13 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
             }
             if (!message.type || message.type === 'ping' || message.type === 'connected') return
 
+            const messageKey = `${message.type}:${message.data?.id ?? message.data?.incident_id ?? event.data}`
+            if (receivedMessages.current.has(messageKey)) return
+            receivedMessages.current.add(messageKey)
+            if (receivedMessages.current.size > 500) {
+              receivedMessages.current = new Set(Array.from(receivedMessages.current).slice(-250))
+            }
+
             const messageType = message.type
             const href = message.data?.incident_id
               ? `/incidents/${message.data.incident_id}`
@@ -135,6 +145,7 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
               },
               ...items,
             ].slice(0, 15))
+            window.dispatchEvent(new CustomEvent('threatlens:telemetry', { detail: message }))
           } catch {
             // ignore
           }
@@ -149,6 +160,10 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
         }
       } catch {
         setLiveConnected(false)
+        if (!closed) {
+          retryTimer = window.setTimeout(connect, delay)
+          delay = Math.min(delay * 2, 15000)
+        }
       }
     }
 
