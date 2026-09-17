@@ -83,14 +83,14 @@ class GroqProvider(AIProvider):
             if response.status_code == 200:
                 result = response.json()
                 content = result["choices"][0]["message"]["content"]
-                print(f"[Groq] ✅ Success! Response length: {len(content)}")
+                print(f"[Groq] [OK] Success! Response length: {len(content)}")
                 return content
             else:
-                print(f"[Groq] ❌ Error: Status {response.status_code}")
+                print(f"[Groq] [FAIL] Error: Status {response.status_code}")
                 print(f"[Groq] Response: {response.text[:200]}")
                 return None
         except Exception as e:
-            print(f"[Groq] ❌ Exception: {str(e)}")
+            print(f"[Groq] [FAIL] Exception: {str(e)}")
             return None
 
 
@@ -142,17 +142,17 @@ class GeminiProvider(AIProvider):
                 data = response.json()
                 if "candidates" in data and len(data["candidates"]) > 0:
                     content = data["candidates"][0]["content"]["parts"][0]["text"]
-                    print(f"[Gemini] ✅ Success! Response length: {len(content)}")
+                    print(f"[Gemini] [OK] Success! Response length: {len(content)}")
                     return content
                 else:
-                    print(f"[Gemini] ❌ No candidates in response")
+                    print(f"[Gemini] [FAIL] No candidates in response")
                     return None
             else:
-                print(f"[Gemini] ❌ Error: Status {response.status_code}")
+                print(f"[Gemini] [FAIL] Error: Status {response.status_code}")
                 print(f"[Gemini] Response: {response.text[:200]}")
                 return None
         except Exception as e:
-            print(f"[Gemini] ❌ Exception: {str(e)}")
+            print(f"[Gemini] [FAIL] Exception: {str(e)}")
             return None
 
 
@@ -199,12 +199,12 @@ class OpenRouterProvider(AIProvider):
             if response.status_code == 200:
                 result = response.json()
                 content = result["choices"][0]["message"]["content"]
-                print(f"[OpenRouter] ✅ Success! Response length: {len(content)}")
+                print(f"[OpenRouter] [OK] Success! Response length: {len(content)}")
                 return content
             else:
-                print(f"[OpenRouter] ❌ Error: Status {response.status_code}")
+                print(f"[OpenRouter] [FAIL] Error: Status {response.status_code}")
                 print(f"[OpenRouter] Response: {response.text[:200]}")
                 return None
         except Exception as e:
-            print(f"[OpenRouter] ❌ Exception: {str(e)}")
+            print(f"[OpenRouter] [FAIL] Exception: {str(e)}")
             return None

@@ -179,6 +179,31 @@ export default function SettingsPage() {
               </div>
             </article>
 
+            {/* Response Policy Summary */}
+            <article className="panel">
+              <div className="panel-header">
+                <h2>Defensive Response Policies</h2>
+              </div>
+              <div className="p-4 space-y-2 text-[11.5px] font-mono">
+                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
+                  <span>Block Malicious IP</span>
+                  <span className="text-success font-semibold">Autonomous Allowed</span>
+                </div>
+                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
+                  <span>Disable User Account</span>
+                  <span className="text-sev-high font-semibold">Approval Required</span>
+                </div>
+                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
+                  <span>Isolate Host Endpoint</span>
+                  <span className="text-sev-high font-semibold">Approval Required</span>
+                </div>
+                <div className="p-2 rounded bg-surface-raised border border-border flex items-center justify-between">
+                  <span>Apply CVE Mitigation</span>
+                  <span className="text-sev-high font-semibold">Approval Required</span>
+                </div>
+              </div>
+            </article>
+
             {/* Storage Management */}
             <article className="panel">
               <div className="panel-header">

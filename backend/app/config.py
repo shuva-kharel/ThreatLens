@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
 
+    # ===== Incident Correlation =====
+    # Inactivity gap threshold (seconds) before starting a new incident for the same source/target
+    incident_correlation_window_seconds: int = int(os.getenv("INCIDENT_CORRELATION_WINDOW_SECONDS", "300"))
+
     # ===== Groq (Primary - FASTEST) =====
     groq_api_key: Optional[str] = os.getenv("GROQ_API_KEY")
     groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
@@ -39,21 +43,24 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # ===== Debug Output (shows what's loaded) =====
-print("=" * 50)
-print("📋 CONFIGURATION LOADED")
-print("=" * 50)
-print(f"🔷 GROQ:")
-print(f"   API Key: {settings.groq_api_key[:15] if settings.groq_api_key else 'NOT SET'}...")
-print(f"   Model: {settings.groq_model}")
-print(f"   Base URL: {settings.groq_base_url}")
-print()
-print(f"🔷 GEMINI:")
-print(f"   API Key: {settings.gemini_api_key[:15] if settings.gemini_api_key else 'NOT SET'}...")
-print(f"   Model: {settings.gemini_model}")
-print(f"   Base URL: {settings.gemini_base_url}")
-print()
-print(f"🔷 OPENROUTER:")
-print(f"   API Key: {settings.openrouter_api_key[:15] if settings.openrouter_api_key else 'NOT SET'}...")
-print(f"   Model: {settings.openrouter_model}")
-print(f"   Base URL: {settings.openrouter_base_url}")
-print("=" * 50)
+try:
+    print("=" * 50)
+    print("[CONFIG] CONFIGURATION LOADED")
+    print("=" * 50)
+    print(f"[*] GROQ:")
+    print(f"   API Key: {settings.groq_api_key[:15] if settings.groq_api_key else 'NOT SET'}...")
+    print(f"   Model: {settings.groq_model}")
+    print(f"   Base URL: {settings.groq_base_url}")
+    print()
+    print(f"[*] GEMINI:")
+    print(f"   API Key: {settings.gemini_api_key[:15] if settings.gemini_api_key else 'NOT SET'}...")
+    print(f"   Model: {settings.gemini_model}")
+    print(f"   Base URL: {settings.gemini_base_url}")
+    print()
+    print(f"[*] OPENROUTER:")
+    print(f"   API Key: {settings.openrouter_api_key[:15] if settings.openrouter_api_key else 'NOT SET'}...")
+    print(f"   Model: {settings.openrouter_model}")
+    print(f"   Base URL: {settings.openrouter_base_url}")
+    print("=" * 50)
+except Exception:
+    pass

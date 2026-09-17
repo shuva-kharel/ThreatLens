@@ -52,6 +52,7 @@ async def broadcast_incident_update(incident_data: dict):
 @router.websocket("/events")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    ping_task = None
     try:
         # Send initial connection confirmation
         await websocket.send_json({
@@ -90,7 +91,8 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[WebSocket] Unexpected error: {e}")
         manager.disconnect(websocket)
     finally:
-        ping_task.cancel()
+        if ping_task and not ping_task.done():
+            ping_task.cancel()
         manager.disconnect(websocket)
 
 async def send_ping(websocket: WebSocket):

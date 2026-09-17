@@ -108,12 +108,14 @@ class DetectionEngine:
         if event.event_type != "ssh_failed_login":
             return None
 
-        cutoff = datetime.utcnow() - timedelta(seconds=60)
+        event_time = event.timestamp or datetime.utcnow()
+        cutoff = event_time - timedelta(seconds=60)
 
         recent_failures = self.db.query(Event).filter(
             Event.event_type == "ssh_failed_login",
             Event.source_ip == event.source_ip,
             Event.timestamp >= cutoff,
+            Event.timestamp <= event_time,
             Event.host == event.host
         ).count()
 
@@ -122,6 +124,7 @@ class DetectionEngine:
                 Event.event_type == "ssh_failed_login",
                 Event.source_ip == event.source_ip,
                 Event.timestamp >= cutoff,
+                Event.timestamp <= event_time,
                 Event.host == event.host
             ).all()
             evidence_ids = [e.id for e in evidence_events]
@@ -140,18 +143,29 @@ class DetectionEngine:
 
     def _check_port_scanning(self, event: Event) -> Optional[AlertCreate]:
         """Rule NET-001: Multiple connection attempts across ports."""
-        if event.event_type != "ssh_failed_login":
+        raw = (event.raw_event or "").lower()
+        if event.event_type != "port_scan" and "port scan" not in raw:
             return None
 
-        cutoff = datetime.utcnow() - timedelta(seconds=30)
+        event_time = event.timestamp or datetime.utcnow()
+        cutoff = event_time - timedelta(seconds=60)
 
         recent_attempts = self.db.query(Event).filter(
-            Event.event_type == "ssh_failed_login",
+            (Event.event_type == "port_scan") | (Event.raw_event.ilike("%port scan%")),
             Event.source_ip == event.source_ip,
-            Event.timestamp >= cutoff
+            Event.timestamp >= cutoff,
+            Event.timestamp <= event_time
         ).count()
 
-        if recent_attempts >= 4:
+        if recent_attempts >= 3:
+            evidence_events = self.db.query(Event).filter(
+                (Event.event_type == "port_scan") | (Event.raw_event.ilike("%port scan%")),
+                Event.source_ip == event.source_ip,
+                Event.timestamp >= cutoff,
+                Event.timestamp <= event_time
+            ).all()
+            evidence_ids = [e.id for e in evidence_events] if evidence_events else [event.id]
+
             return AlertCreate(
                 alert_type="port_scanning",
                 severity=Severity.MEDIUM,
@@ -159,7 +173,7 @@ class DetectionEngine:
                 source_ip=event.source_ip,
                 target_host=event.host,
                 description=f"Port scanning detected from {event.source_ip}",
-                evidence=[event.id],
+                evidence=evidence_ids,
                 confidence=0.7
             )
         return None
@@ -169,12 +183,14 @@ class DetectionEngine:
         if event.event_type != "ssh_success":
             return None
 
-        cutoff = datetime.utcnow() - timedelta(minutes=5)
+        event_time = event.timestamp or datetime.utcnow()
+        cutoff = event_time - timedelta(minutes=5)
 
         prior_failures = self.db.query(Event).filter(
             Event.event_type == "ssh_failed_login",
             Event.source_ip == event.source_ip,
             Event.timestamp >= cutoff,
+            Event.timestamp <= event_time,
             Event.host == event.host
         ).count()
 

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -100,6 +100,19 @@ class Incident(IncidentBase):
     created_at: datetime
     updated_at: datetime
     recommendations: Optional[List[str]] = None  # ← Allow None
+
+    @computed_field
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        if self.first_seen and self.last_seen:
+            return round((self.last_seen - self.first_seen).total_seconds(), 3)
+        return None
+
+    @computed_field
+    @property
+    def duration_minutes(self) -> Optional[float]:
+        secs = self.duration_seconds
+        return round(secs / 60.0, 3) if secs is not None else None
 
     class Config:
         from_attributes = True

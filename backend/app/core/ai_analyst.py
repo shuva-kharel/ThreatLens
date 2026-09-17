@@ -19,12 +19,12 @@ class AIAnalyst:
         self.available_providers = [p for p in self.providers if p.is_available()]
 
         provider_names = [p.name for p in self.available_providers]
-        print(f"\n[AI] ✅ Available providers: {provider_names}")
+        print(f"\n[AI] [OK] Available providers: {provider_names}")
 
         if not self.available_providers:
-            print("[AI] ⚠️  WARNING: No AI providers available! Using mock responses.")
+            print("[AI] [WARN] WARNING: No AI providers available! Using mock responses.")
         else:
-            print(f"[AI] 🚀 Using primary provider: {self.available_providers[0].name}")
+            print(f"[AI] [*] Using primary provider: {self.available_providers[0].name}")
         print("-" * 40 + "\n")
 
     async def analyze_incident(self, incident_data: Dict[str, Any]) -> Optional[AIAnalysisResponse]:
@@ -33,24 +33,24 @@ class AIAnalyst:
         prompt = self._build_prompt(incident_data)
 
         for provider in self.available_providers:
-            print(f"\n[AI] 🎯 Trying provider: {provider.name}")
+            print(f"\n[AI] [*] Trying provider: {provider.name}")
 
             try:
                 response_text = await provider.analyze(prompt)
 
                 if response_text:
-                    print(f"[AI] ✅ {provider.name} succeeded!")
+                    print(f"[AI] [OK] {provider.name} succeeded!")
                     parsed_response = self._parse_response(response_text, incident_data)
                     print("[AI] Analysis complete!\n")
                     return parsed_response
                 else:
-                    print(f"[AI] ❌ {provider.name} returned empty response, trying next...")
+                    print(f"[AI] [FAIL] {provider.name} returned empty response, trying next...")
 
             except Exception as e:
-                print(f"[AI] ❌ {provider.name} failed: {str(e)}, trying next...")
+                print(f"[AI] [FAIL] {provider.name} failed: {str(e)}, trying next...")
                 continue
 
-        print("\n[AI] ❌ All providers failed - using mock response")
+        print("\n[AI] [FAIL] All providers failed - using mock response")
         return self._get_mock_response(incident_data)
 
     def _build_prompt(self, incident_data: Dict[str, Any]) -> str:
@@ -116,8 +116,8 @@ class AIAnalyst:
                 continue
 
             # Handle bullet points
-            if line.startswith('-') or line.startswith('•') or line.startswith('*'):
-                clean_line = line.lstrip('-•* ').strip()
+            if line.startswith('-') or line.startswith('*') or line.startswith('\u2022'):
+                clean_line = line.lstrip('-*\u2022 ').strip()
                 if current_section == "evidence":
                     response["evidence_list"].append(clean_line)
                 elif current_section == "progression":

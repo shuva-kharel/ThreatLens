@@ -9,10 +9,13 @@ export function SeverityBadge({ value }: { value: Severity | string | null | und
   return <span className={`sev-badge ${displayClass}`}>{titleCase(value || 'Unknown')}</span>
 }
 
-export function EmptyState({ title, children }: { title?: string; children?: ReactNode }) {
+export function EmptyState({ title, description, children }: { title?: string; description?: string; children?: ReactNode }) {
   return (
     <div className="quiet-empty">
-      {children || title || 'No records found.'}
+      {title && <strong className="block text-text mb-1">{title}</strong>}
+      {description && <p className="text-muted text-[11px] mb-1">{description}</p>}
+      {children}
+      {!title && !description && !children && 'No records found.'}
     </div>
   )
 }

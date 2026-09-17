@@ -17,13 +17,25 @@ import {
   ShieldAlert,
   X,
   Shield,
+  ShieldCheck,
+  Bug,
 } from 'lucide-react'
-import { api, checkHealth, wsEventsUrl, type Alert, type Incident } from '@/lib/api'
+import {
+  api,
+  checkHealth,
+  wsEventsUrl,
+  type Alert,
+  type Incident,
+  type ResponsePlaybook,
+  type VulnerabilityFinding,
+} from '@/lib/api'
 import { formatDate, titleCase } from './format'
 
 const nav = [
   { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Incidents', href: '/incidents', icon: ShieldAlert },
+  { label: 'Response Center', href: '/response', icon: ShieldCheck },
+  { label: 'Vulnerabilities', href: '/vulnerabilities', icon: Bug },
   { label: 'Alerts', href: '/alerts', icon: Bell },
   { label: 'Events', href: '/events', icon: Activity },
   { label: 'Network', href: '/network', icon: Network },
@@ -64,10 +76,20 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
     return () => window.clearInterval(timer)
   }, [])
 
+  const [playbooks, setPlaybooks] = useState<ResponsePlaybook[]>([])
+  const [vulnerabilities, setVulnerabilities] = useState<VulnerabilityFinding[]>([])
+
   useEffect(() => {
-    Promise.allSettled([api.incidents(), api.alerts(new URLSearchParams({ limit: '25' }))]).then(([incidentResult, alertResult]) => {
+    Promise.allSettled([
+      api.incidents(),
+      api.alerts(new URLSearchParams({ limit: '25' })),
+      api.responsePlaybooks(),
+      api.vulnerabilities(),
+    ]).then(([incidentResult, alertResult, playbookResult, vulnResult]) => {
       if (incidentResult.status === 'fulfilled') setIncidents(incidentResult.value)
       if (alertResult.status === 'fulfilled') setAlerts(alertResult.value)
+      if (playbookResult.status === 'fulfilled') setPlaybooks(playbookResult.value)
+      if (vulnResult.status === 'fulfilled') setVulnerabilities(vulnResult.value)
     })
   }, [pathname])
 
@@ -156,8 +178,22 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
           detail: `Alert · ${item.mitre_technique ?? 'No MITRE'} · ${formatDate(item.created_at)}`,
           href: item.incident_id ? `/incidents/${item.incident_id}` : '/alerts',
         })),
-    ].slice(0, 8)
-  }, [alerts, incidents, query])
+      ...playbooks
+        .filter((item) => `${item.id} ${item.name} ${item.description} ${item.action_type}`.toLowerCase().includes(needle))
+        .map((item) => ({
+          label: item.name,
+          detail: `Playbook [${item.id}] · ${titleCase(item.action_type)}`,
+          href: '/response',
+        })),
+      ...vulnerabilities
+        .filter((item) => `${item.cve_id} ${item.title} ${item.affected_product}`.toLowerCase().includes(needle))
+        .map((item) => ({
+          label: `${item.cve_id}: ${item.title}`,
+          detail: `Vulnerability · ${titleCase(item.severity)} · ${item.affected_product}`,
+          href: '/vulnerabilities',
+        })),
+    ].slice(0, 10)
+  }, [alerts, incidents, playbooks, vulnerabilities, query])
 
   const selectTheme = (next: string) => {
     setTheme(next)
@@ -212,6 +248,7 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
             <select value={theme} onChange={(event) => selectTheme(event.target.value)} aria-label="Select appearance">
               <option value="dark">Dark (Zinc)</option>
               <option value="light">Light</option>
+              <option value="contrast">High Contrast</option>
             </select>
           </div>
         </div>

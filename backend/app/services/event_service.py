@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.models.database import Event, Alert, Incident
 from app.models.schemas import EventCreate
 from app.core.detection import DetectionEngine
+from app.config import settings
 from pydantic import BaseModel
 import uuid
 import asyncio
@@ -74,6 +75,24 @@ class EventService:
                         seen_incident_ids.add(incident.id)
                         self._broadcast_incident(incident)
                         incidents.append(self._serialize_incident(incident))
+        else:
+            # Check if there is an existing active incident for this source IP within correlation window
+            if event.source_ip and event.timestamp:
+                active_incident = self.db.query(Incident).filter(
+                    Incident.status.in_(["open", "investigating"]),
+                    Incident.source_entities.contains([event.source_ip])
+                ).order_by(Incident.last_seen.desc()).first()
+                if active_incident and active_incident.last_seen:
+                    window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
+                    gap = (event.timestamp - active_incident.last_seen).total_seconds()
+                    if 0 <= gap <= window_seconds:
+                        active_incident.last_seen = event.timestamp
+                        self.db.commit()
+                        self.db.refresh(active_incident)
+                elif active_incident and not active_incident.last_seen:
+                    active_incident.last_seen = event.timestamp
+                    self.db.commit()
+                    self.db.refresh(active_incident)
 
         return {
             "event": {
@@ -127,6 +146,23 @@ class EventService:
                             results["incident_ids"].add(incident.id)
                             self._broadcast_incident(incident)
 
+                if not alerts and event.source_ip and event.timestamp:
+                    active_incident = self.db.query(Incident).filter(
+                        Incident.status.in_(["open", "investigating"]),
+                        Incident.source_entities.contains([event.source_ip])
+                    ).order_by(Incident.last_seen.desc()).first()
+                    if active_incident and active_incident.last_seen:
+                        window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
+                        gap = (event.timestamp - active_incident.last_seen).total_seconds()
+                        if 0 <= gap <= window_seconds:
+                            active_incident.last_seen = event.timestamp
+                            self.db.commit()
+                            self.db.refresh(active_incident)
+                    elif active_incident and not active_incident.last_seen:
+                        active_incident.last_seen = event.timestamp
+                        self.db.commit()
+                        self.db.refresh(active_incident)
+
                 results["successful"] += 1
 
             except Exception as e:
@@ -148,6 +184,13 @@ class EventService:
 
     def _create_alert(self, alert_data) -> Alert:
         """Create and persist an alert."""
+        # Set created_at from earliest evidence event timestamp if available
+        alert_created_at = datetime.utcnow()
+        if alert_data.evidence:
+            ev_first = self.db.query(Event).filter(Event.id.in_(alert_data.evidence)).order_by(Event.timestamp.asc()).first()
+            if ev_first and ev_first.timestamp:
+                alert_created_at = ev_first.timestamp
+
         alert = Alert(
             id=str(uuid.uuid4()),
             alert_type=alert_data.alert_type,
@@ -157,7 +200,8 @@ class EventService:
             target_host=alert_data.target_host,
             description=alert_data.description,
             evidence=alert_data.evidence,
-            confidence=alert_data.confidence
+            confidence=alert_data.confidence,
+            created_at=alert_created_at
         )
         self.db.add(alert)
         self.db.commit()
@@ -220,21 +264,49 @@ class EventService:
         }
 
     def _create_incident_from_alert(self, alert: Alert) -> Optional[Incident]:
-        """Create or update an incident from a single alert."""
+        """Create or update an incident from a single alert within the correlation window."""
+        # Determine effective alert timestamp (from alert or its earliest evidence)
+        alert_time = alert.created_at or datetime.utcnow()
+        if alert.evidence:
+            ev_first = self.db.query(Event).filter(Event.id.in_(alert.evidence)).order_by(Event.timestamp.asc()).first()
+            if ev_first and ev_first.timestamp:
+                alert_time = ev_first.timestamp
+
         # Look for existing open/investigating incident for this source IP
+        window_seconds = getattr(settings, "incident_correlation_window_seconds", 300)
         existing = self.db.query(Incident).filter(
             Incident.status.in_(["open", "investigating"]),
             Incident.source_entities.contains([alert.source_ip])
         ).order_by(Incident.last_seen.desc()).first()
 
-        if existing:
+        if existing and existing.last_seen:
+            # Check if alert occurs within the correlation window of the incident's last_seen
+            # or if the gap exceeds the inactivity window threshold
+            gap = (alert_time - existing.last_seen).total_seconds()
+            if 0 <= gap <= window_seconds:
+                return self._update_incident(existing, alert)
+            elif gap < 0:
+                # Alert is in the past; only merge if within window before first_seen
+                if existing.first_seen and (existing.first_seen - alert_time).total_seconds() <= window_seconds:
+                    return self._update_incident(existing, alert)
+            # Gap exceeds window -> do not merge into old incident, start a new incident!
+        elif existing:
             return self._update_incident(existing, alert)
 
         return self._create_new_incident(alert)
 
     def _update_incident(self, incident: Incident, alert: Alert) -> Incident:
         """Update an existing incident with a new alert."""
-        incident.last_seen = alert.created_at
+        # Update last_seen: max of current last_seen, alert created_at, and alert evidence timestamps
+        latest_ts = alert.created_at
+        if alert.evidence:
+            evidence_events = self.db.query(Event).filter(Event.id.in_(alert.evidence)).all()
+            for ev in evidence_events:
+                if ev.timestamp and (not latest_ts or ev.timestamp > latest_ts):
+                    latest_ts = ev.timestamp
+
+        if not incident.last_seen or (latest_ts and latest_ts > incident.last_seen):
+            incident.last_seen = latest_ts
 
         # Add MITRE technique if not already present
         if alert.mitre_technique:
@@ -250,7 +322,7 @@ class EventService:
             current_chain.append({
                 "stage": stage_name,
                 "description": alert.description,
-                "timestamp": alert.created_at.isoformat(),
+                "timestamp": alert.created_at.isoformat() if alert.created_at else None,
                 "technique_id": alert.mitre_technique
             })
             incident.attack_chain = current_chain
@@ -270,6 +342,17 @@ class EventService:
 
     def _create_new_incident(self, alert: Alert) -> Incident:
         """Create a new incident from an alert."""
+        earliest_ts = alert.created_at
+        latest_ts = alert.created_at
+        if alert.evidence:
+            evidence_events = self.db.query(Event).filter(Event.id.in_(alert.evidence)).all()
+            for ev in evidence_events:
+                if ev.timestamp:
+                    if not earliest_ts or ev.timestamp < earliest_ts:
+                        earliest_ts = ev.timestamp
+                    if not latest_ts or ev.timestamp > latest_ts:
+                        latest_ts = ev.timestamp
+
         incident = Incident(
             id=str(uuid.uuid4()),
             title=f"{alert.alert_type.replace('_', ' ').title()} from {alert.source_ip}",
@@ -281,12 +364,12 @@ class EventService:
             attack_chain=[{
                 "stage": self._get_stage_from_alert(alert),
                 "description": alert.description,
-                "timestamp": alert.created_at.isoformat(),
+                "timestamp": alert.created_at.isoformat() if alert.created_at else None,
                 "technique_id": alert.mitre_technique
             }],
             mitre_techniques=[alert.mitre_technique] if alert.mitre_technique else [],
-            first_seen=alert.created_at,
-            last_seen=alert.created_at,
+            first_seen=earliest_ts,
+            last_seen=latest_ts,
             recommendations=[]
         )
         self.db.add(incident)

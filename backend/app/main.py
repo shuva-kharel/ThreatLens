@@ -5,10 +5,21 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import uvicorn
 import traceback
+import sys
+
+# Ensure UTF-8 console output safely on Windows without charmap encoding errors
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from app.api import (
     events, alerts, incidents, websocket, export,
-    stats, simulator, netsentinel, detections, mitre
+    stats, simulator, netsentinel, detections, mitre,
+    response, vulnerabilities
 )
 from app.db.session import engine, get_db
 from app.models.database import Base
@@ -74,6 +85,8 @@ app.include_router(export.router, prefix="/api/v1/incidents/export", tags=["expo
 app.include_router(events.router, prefix="/api/v1/events", tags=["events"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
 app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["incidents"])
+app.include_router(response.router, prefix="/api/v1/response", tags=["response"])
+app.include_router(vulnerabilities.router, prefix="/api/v1/vulnerabilities", tags=["vulnerabilities"])
 app.include_router(websocket.router, prefix="/api/v1/ws", tags=["websocket"])
 
 

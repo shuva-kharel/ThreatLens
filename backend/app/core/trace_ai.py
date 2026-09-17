@@ -78,10 +78,10 @@ class TraceAI:
         if not incident:
             return {"error": "Incident not found"}
 
-        # ✅ FIX 1: Get alerts via incident_id (primary) OR by source IP (fallback)
+        # Filter alerts belonging to incident within incident timeline
         alerts = self._get_incident_alerts(incident)
 
-        # ✅ FIX 2: Get events via alert evidence OR by source IP + time window
+        # Filter events belonging to incident strictly within incident timeline
         events = self._get_incident_events(incident, alerts)
 
         # Sort by timestamp
@@ -93,6 +93,8 @@ class TraceAI:
         attack_graph = self._build_attack_graph(events, alerts, incident)
         stages = self._identify_stages(events, alerts, incident)
         entities = self._extract_entities(events, alerts, incident)
+
+        durations = self._calculate_durations(incident)
 
         return {
             "incident_id": incident_id,
@@ -109,30 +111,42 @@ class TraceAI:
             "alert_count": len(alerts),
             "first_seen": incident.first_seen.isoformat() if incident.first_seen else None,
             "last_seen": incident.last_seen.isoformat() if incident.last_seen else None,
-            "duration_minutes": self._calculate_duration(incident)
+            "duration_seconds": durations["duration_seconds"],
+            "duration_minutes": durations["duration_minutes"]
         }
 
     def _get_incident_alerts(self, incident: Incident) -> List[Alert]:
-        """Get all alerts for an incident."""
+        """Get all alerts for an incident strictly within its timeline."""
         # Primary: Get alerts linked via incident_id
         alerts = self.db.query(Alert).filter(
             Alert.incident_id == incident.id
         ).all()
 
-        # Fallback: Get alerts by matching source IP within time window
+        # Fallback: Get alerts by matching source IP within incident timeline
         if not alerts and incident.source_entities:
             for source_ip in incident.source_entities:
-                fallback_alerts = self.db.query(Alert).filter(
-                    Alert.source_ip == source_ip,
-                    Alert.created_at >= incident.first_seen - timedelta(minutes=5),
-                    Alert.created_at <= incident.last_seen + timedelta(minutes=5)
-                ).all()
+                query = self.db.query(Alert).filter(Alert.source_ip == source_ip)
+                if incident.first_seen:
+                    query = query.filter(Alert.created_at >= incident.first_seen)
+                if incident.last_seen:
+                    query = query.filter(Alert.created_at <= incident.last_seen)
+                fallback_alerts = query.all()
                 alerts.extend(fallback_alerts)
 
-        return list({a.id: a for a in alerts}.values())
+        # Enforce boundary: alert must be within [first_seen, last_seen] if set
+        filtered_alerts = []
+        for a in alerts:
+            if a.created_at:
+                if incident.first_seen and a.created_at < incident.first_seen:
+                    continue
+                if incident.last_seen and a.created_at > incident.last_seen:
+                    continue
+            filtered_alerts.append(a)
+
+        return list({a.id: a for a in filtered_alerts}.values())
 
     def _get_incident_events(self, incident: Incident, alerts: List[Alert]) -> List[Event]:
-        """Get all events related to an incident."""
+        """Get all events related to an incident strictly within its timeline [first_seen, last_seen]."""
         events = []
         event_ids = set()
 
@@ -146,17 +160,31 @@ class TraceAI:
                             events.append(event)
                             event_ids.add(event_id)
 
-        # Fallback: Get events by source IP within time window
-        if not events and incident.source_entities:
+        # Fallback / Correlated: Get events by source IP within incident timeline
+        if incident.source_entities:
             for source_ip in incident.source_entities:
-                fallback_events = self.db.query(Event).filter(
-                    Event.source_ip == source_ip,
-                    Event.timestamp >= incident.first_seen - timedelta(minutes=5),
-                    Event.timestamp <= incident.last_seen + timedelta(minutes=5)
-                ).all()
-                events.extend(fallback_events)
+                query = self.db.query(Event).filter(Event.source_ip == source_ip)
+                if incident.first_seen:
+                    query = query.filter(Event.timestamp >= incident.first_seen)
+                if incident.last_seen:
+                    query = query.filter(Event.timestamp <= incident.last_seen)
+                correlated_events = query.all()
+                for e in correlated_events:
+                    if e.id not in event_ids:
+                        events.append(e)
+                        event_ids.add(e.id)
 
-        return list({e.id: e for e in events}.values())
+        # Enforce strict boundary: event.timestamp >= first_seen and <= last_seen
+        filtered_events = []
+        for e in events:
+            if e.timestamp:
+                if incident.first_seen and e.timestamp < incident.first_seen:
+                    continue
+                if incident.last_seen and e.timestamp > incident.last_seen:
+                    continue
+            filtered_events.append(e)
+
+        return list({e.id: e for e in filtered_events}.values())
 
     def _build_timeline(self, events: List[Event], alerts: List[Alert]) -> List[Dict]:
         """Build chronological timeline of the attack."""
@@ -233,22 +261,38 @@ class TraceAI:
                 })
                 seen_nodes.add(node_id)
 
-        # Stage nodes
+        # Stage nodes - from alerts and correlated events
+        stage_mitre_map = {}
+        stage_first_seen_map = {}
         for alert in alerts:
-            stage = self._get_stage_from_alert(alert)
-            if stage and stage != "Unknown":
-                stage_id = f"stage-{stage.lower().replace(' ', '-')}"
-                if stage_id not in seen_nodes:
-                    nodes.append({
-                        "id": stage_id,
-                        "type": "stage",
-                        "label": stage,
-                        "data": {
-                            "stage": stage,
-                            "mitre_technique": alert.mitre_technique
-                        }
-                    })
-                    seen_nodes.add(stage_id)
+            st = self._get_stage_from_alert(alert)
+            if st and st != "Unknown":
+                stage_mitre_map[st] = alert.mitre_technique
+                ts = alert.created_at.isoformat() if alert.created_at else "9999"
+                if st not in stage_first_seen_map or ts < stage_first_seen_map[st]:
+                    stage_first_seen_map[st] = ts
+        for event in events:
+            st = self._get_stage_from_event(event)
+            if st and st != "Unknown":
+                if st not in stage_mitre_map:
+                    stage_mitre_map[st] = self._get_mitre_from_event(event)
+                ts = event.timestamp.isoformat() if event.timestamp else "9999"
+                if st not in stage_first_seen_map or ts < stage_first_seen_map[st]:
+                    stage_first_seen_map[st] = ts
+
+        for stage, mitre_tech in stage_mitre_map.items():
+            stage_id = f"stage-{stage.lower().replace(' ', '-')}"
+            if stage_id not in seen_nodes:
+                nodes.append({
+                    "id": stage_id,
+                    "type": "stage",
+                    "label": stage,
+                    "data": {
+                        "stage": stage,
+                        "mitre_technique": mitre_tech
+                    }
+                })
+                seen_nodes.add(stage_id)
 
         # User nodes
         usernames = set(e.username for e in events if e.username)
@@ -276,10 +320,10 @@ class TraceAI:
                     })
                     seen_edges.add(edge_id)
 
-        # Edges from attacker to stages (in order)
+        # Edges from attacker to stages (in chronological order)
         stages_in_order = sorted(
-            set(self._get_stage_from_alert(a) for a in alerts if self._get_stage_from_alert(a)),
-            key=lambda s: self.STAGE_ORDER.get(s, 99)
+            list(stage_mitre_map.keys()),
+            key=lambda s: (stage_first_seen_map.get(s, "9999"), self.STAGE_ORDER.get(s, 99))
         )
 
         for ip in (incident.source_entities or []):
@@ -366,13 +410,14 @@ class TraceAI:
                     "description": self.STAGE_DESCRIPTIONS.get(stage, "")
                 }
 
-        # Convert to list and sort
+        # Convert to list and sort chronologically by first_seen, falling back to STAGE_ORDER
         stages = list(stage_data.values())
-        stages.sort(key=lambda s: s["order"])
+        stages.sort(key=lambda s: (s["first_seen"] or "9999", s.get("order", 99)))
 
-        # Add descriptions
-        for stage in stages:
-            if "description" not in stage:
+        # Assign contiguous 1-based chronological order (1, 2, 3...)
+        for idx, stage in enumerate(stages, start=1):
+            stage["order"] = idx
+            if "description" not in stage or not stage["description"]:
                 stage["description"] = self.STAGE_DESCRIPTIONS.get(stage["stage"], "")
 
         return stages
@@ -427,35 +472,41 @@ class TraceAI:
         event_type = (event.event_type or "").lower()
         raw = (event.raw_event or "").lower()
 
-        # Port scanning / reconnaissance
-        if "port scan" in raw or "scan" in raw or "probe" in raw:
+        # Port scanning / reconnaissance (T1046) - check event_type first
+        if event_type == "port_scan" or "port scan" in raw or "syn sweep" in raw:
             return "Reconnaissance"
 
-        # Failed authentication
-        if "failed" in event_type or "failed" in raw:
-            if "ssh" in event_type or "ssh" in raw:
-                return "Credential Access"
+        # Failed authentication / brute force (T1110)
+        if event_type == "ssh_failed_login" or "failed password" in raw or ("failed" in event_type and "ssh" in event_type):
             return "Credential Access"
 
-        # Successful login
-        if "success" in event_type or "accepted" in raw:
+        # Successful login (T1078)
+        if event_type == "ssh_success" or "accepted password" in raw or ("success" in event_type and "ssh" in event_type):
             return "Initial Access"
 
-        # Privilege escalation
-        if "sudo" in raw or "privilege" in raw or "su " in raw:
+        # Privilege escalation (T1548 / T1068)
+        if "sudo" in raw or "privilege" in raw or "su -" in raw or "su " in raw:
             return "Privilege Escalation"
 
-        # Credential access
-        if "shadow" in raw or "passwd" in raw or "credential" in raw:
+        # Credential dumping (T1003)
+        if "shadow" in raw or "passwd" in raw or "mimikatz" in raw:
             return "Credential Dumping"
 
-        # Command execution
-        if "command" in event_type or "wget" in raw or "curl" in raw or "bash" in raw:
+        # C2 (T1071)
+        if "reverse shell" in raw or ("nc " in raw and "-e" in raw) or "malicious.com 4444" in raw:
+            return "Command & Control"
+
+        # General command execution (T1059)
+        if event_type == "command_execution" or "wget" in raw or "curl" in raw or "bash" in raw or "sh" in raw:
             return "Execution"
 
-        # C2
-        if "nc " in raw or "netcat" in raw or "reverse shell" in raw:
-            return "Command & Control"
+        # Other generic checks
+        if "scan" in raw or "probe" in raw:
+            return "Reconnaissance"
+        if "failed" in event_type or "failed" in raw:
+            return "Credential Access"
+        if "success" in event_type or "accepted" in raw:
+            return "Initial Access"
 
         return "Unknown"
 
@@ -486,15 +537,40 @@ class TraceAI:
 
     def _get_mitre_from_event(self, event: Event) -> Optional[str]:
         """Get MITRE technique from an event."""
+        event_type = (event.event_type or "").lower()
+        if event_type == "port_scan":
+            return "T1046"
+        elif event_type == "ssh_failed_login":
+            return "T1110"
+        elif event_type == "ssh_success":
+            return "T1078"
+        elif event_type == "command_execution":
+            stage = self._get_stage_from_event(event)
+            if stage == "Privilege Escalation":
+                return "T1548"
+            elif stage == "Credential Dumping":
+                return "T1003"
+            elif stage == "Command & Control":
+                return "T1071"
+            return "T1059"
+
         stage = self._get_stage_from_event(event)
         for technique, mapped_stage in self.MITRE_TO_STAGE.items():
             if mapped_stage == stage:
                 return technique
         return None
 
-    def _calculate_duration(self, incident: Incident) -> Optional[int]:
-        """Calculate incident duration in minutes."""
+    def _calculate_durations(self, incident: Incident) -> Dict[str, Optional[float]]:
+        """Calculate incident duration in seconds and minutes."""
         if incident.first_seen and incident.last_seen:
             delta = incident.last_seen - incident.first_seen
-            return int(delta.total_seconds() / 60)
-        return None
+            seconds = round(delta.total_seconds(), 3)
+            minutes = round(seconds / 60.0, 3)
+            return {
+                "duration_seconds": seconds,
+                "duration_minutes": minutes
+            }
+        return {
+            "duration_seconds": None,
+            "duration_minutes": None
+        }

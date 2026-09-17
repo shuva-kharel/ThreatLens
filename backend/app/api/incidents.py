@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.schemas import Incident as IncidentSchema, IncidentUpdate
+from app.models.schemas import Incident as IncidentSchema, IncidentUpdate, ResponseAction
 from app.models.schemas import Alert as AlertSchema
 from app.models.database import Incident as IncidentDB
 from app.models.database import Alert as AlertDB
@@ -141,7 +141,7 @@ async def analyze_incident(incident_id: str, db: Session = Depends(get_db)):
 @router.post("/{incident_id}/response")
 async def record_response(
     incident_id: str,
-    action: dict,
+    action: ResponseAction,
     db: Session = Depends(get_db)
 ):
     """Record a simulated response action."""
@@ -154,14 +154,14 @@ async def record_response(
     response = Response(
         id=str(uuid.uuid4()),
         incident_id=incident_id,
-        action=action.get("action", "unknown"),
+        action=action.action,
         status="completed",
         performed_by="analyst",
-        details=action.get("details", {}),
+        details=action.details or {},
     )
     db.add(response)
 
-    if action.get("action") in ["block_ip", "isolate_host", "disable_account"]:
+    if action.action in ["block_ip", "isolate_host", "disable_account"]:
         incident.status = "contained"
         incident.resolved_at = datetime.now()
 
