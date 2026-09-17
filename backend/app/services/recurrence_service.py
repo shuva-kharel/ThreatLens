@@ -186,4 +186,10 @@ class RecurrenceService:
             ],
         }
         self.db.commit()
-        return self.serialize(escalation)
+        serialized = self.serialize(escalation)
+        try:
+            from app.api.websocket import manager
+            manager.broadcast_sync({"type": "response_escalated", "data": serialized})
+        except Exception as exc:
+            print(f"[RecurrenceService] Escalation broadcast error: {exc}")
+        return serialized

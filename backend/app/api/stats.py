@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.cleanup import DataCleanup
 from app.core.time import KATHMANDU, ensure_utc, utc_now
 from app.db.session import get_db
-from app.models.database import Alert, Escalation, Event, Incident
+from app.models.database import Alert, EndpointAgent, Escalation, Event, Incident
 
 
 router = APIRouter()
@@ -77,6 +77,11 @@ async def get_dashboard_stats(
         .filter(Escalation.requires_human_review.is_(True))
         .count()
     )
+    agents_online = (
+        db.query(EndpointAgent)
+        .filter(EndpointAgent.last_seen >= utc_now() - timedelta(minutes=2))
+        .count()
+    )
 
     # Most common alert/attack types.
     top_alerts = (
@@ -115,6 +120,7 @@ async def get_dashboard_stats(
         "observed_assets": observed_assets,
         "repeat_threats": repeat_threats,
         "human_escalations": human_escalations,
+        "agents_online": agents_online,
         "top_attack_types": [
             {
                 "type": alert_type,

@@ -191,9 +191,10 @@ async def simulate_full_attack(
                 else "medium"
             ),
             raw_event=event_data["raw_event"],
+            normalized_data={"synthetic": True, "telemetry_source": "simulator"},
         )
 
-        result = service.process_event(event)
+        result = await asyncio.to_thread(service.process_event, event)
 
         simulation_status[simulation_id]["events_sent"] += 1
 
@@ -237,7 +238,7 @@ async def simulate_full_attack(
 
 
 @router.post("/simulate/port-scan")
-async def simulate_port_scan(
+def simulate_port_scan(
     attacker_ip: str = "10.10.10.50",
     target_host: str = "target-server",
     db: Session = Depends(get_db),
@@ -261,6 +262,7 @@ async def simulate_port_scan(
                 f"Port scan connection probe on port "
                 f"{22 + i} from {attacker_ip}"
             ),
+            normalized_data={"synthetic": True, "telemetry_source": "simulator"},
         )
 
         service.process_event(event)
@@ -272,7 +274,7 @@ async def simulate_port_scan(
 
 
 @router.post("/simulate/ssh-brute-force")
-async def simulate_ssh_brute_force(
+def simulate_ssh_brute_force(
     attacker_ip: str = "10.10.10.50",
     target_host: str = "target-server",
     db: Session = Depends(get_db),
@@ -304,6 +306,7 @@ async def simulate_ssh_brute_force(
                 f"Failed password for {username} "
                 f"from {attacker_ip}"
             ),
+            normalized_data={"synthetic": True, "telemetry_source": "simulator"},
         )
 
         service.process_event(event)
@@ -315,7 +318,7 @@ async def simulate_ssh_brute_force(
 
 
 @router.post("/simulate/credential-access")
-async def simulate_credential_access(
+def simulate_credential_access(
     attacker_ip: str = "10.10.10.50",
     target_host: str = "target-server",
     db: Session = Depends(get_db),
@@ -356,6 +359,7 @@ async def simulate_credential_access(
             username="admin",
             severity="medium",
             raw_event=raw_event,
+            normalized_data={"synthetic": True, "telemetry_source": "simulator"},
         )
 
         service.process_event(event)

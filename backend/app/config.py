@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     response_pipeline_version: str = os.getenv(
         "RESPONSE_PIPELINE_VERSION", "v1"
     )
+    response_execution_mode: str = os.getenv(
+        "RESPONSE_EXECUTION_MODE", "demo"
+    ).lower()
+    agent_shared_secret: Optional[str] = os.getenv("AGENT_SHARED_SECRET") or None
+    agent_offline_seconds: int = int(os.getenv("AGENT_OFFLINE_SECONDS", "30"))
+    agent_task_timeout_seconds: int = int(os.getenv("AGENT_TASK_TIMEOUT_SECONDS", "15"))
+    protected_addresses: str = os.getenv(
+        "PROTECTED_ADDRESSES", "127.0.0.1,::1"
+    )
+    demo_lab_assets: str = os.getenv("DEMO_LAB_ASSETS", "[]")
+    demo_lab_max_duration_seconds: int = int(os.getenv("DEMO_LAB_MAX_DURATION_SECONDS", "60"))
+    demo_lab_max_events: int = int(os.getenv("DEMO_LAB_MAX_EVENTS", "30"))
+    demo_lab_max_concurrent_runs: int = int(os.getenv("DEMO_LAB_MAX_CONCURRENT_RUNS", "1"))
     slack_notifications_enabled: bool = os.getenv(
         "SLACK_NOTIFICATIONS_ENABLED", "false"
     ).lower() in {"1", "true", "yes", "on"}
@@ -46,7 +59,7 @@ class Settings(BaseSettings):
 
     # ===== Google Gemini (Fallback 1 - Smart) =====
     gemini_api_key: Optional[str] = os.getenv("GEMINI_API_KEY")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-002")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     gemini_base_url: str = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
 
     # ===== OpenRouter (Fallback 2 - Many models) =====

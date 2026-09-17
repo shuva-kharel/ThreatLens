@@ -429,3 +429,73 @@ class Escalation(Base):
         Index("idx_escalation_source", "source_ip"),
         Index("idx_escalation_status", "status"),
     )
+
+
+class EndpointAgent(Base):
+    __tablename__ = "endpoint_agents"
+
+    id = Column(String(64), primary_key=True)
+    hostname = Column(String(255), nullable=False, index=True)
+    os = Column(String(100), nullable=False)
+    ip_addresses = Column(JSON, nullable=False, default=list)
+    version = Column(String(50), nullable=False)
+    capabilities = Column(JSON, nullable=False, default=list)
+    last_seen = Column(UTCDateTime(), nullable=False, default=utc_now, index=True)
+    registered_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AgentTask(Base):
+    __tablename__ = "agent_tasks"
+
+    id = Column(String(64), primary_key=True)
+    agent_id = Column(String(64), nullable=False, index=True)
+    incident_id = Column(String(36), nullable=False, index=True)
+    execution_id = Column(String(50), nullable=False, unique=True, index=True)
+    action = Column(String(50), nullable=False)
+    target = Column(String(45), nullable=False)
+    managed_rule_id = Column(String(100), nullable=False)
+    status = Column(String(30), nullable=False, default="pending", index=True)
+    result = Column(JSON, nullable=True)
+    verification_result = Column(JSON, nullable=True)
+    created_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    claimed_at = Column(UTCDateTime(), nullable=True)
+    completed_at = Column(UTCDateTime(), nullable=True)
+
+
+class DemoRun(Base):
+    __tablename__ = "demo_runs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    scenario = Column(String(50), nullable=False)
+    asset_id = Column(String(64), nullable=False)
+    target_host = Column(String(255), nullable=False)
+    target_ip = Column(String(45), nullable=False)
+    source_ip = Column(String(45), nullable=False)
+    status = Column(String(30), nullable=False, default="queued", index=True)
+    safety_mode = Column(String(30), nullable=False, default="synthetic_telemetry")
+    stop_requested = Column(Boolean, nullable=False, default=False)
+    events_sent = Column(Integer, nullable=False, default=0)
+    alerts_created = Column(Integer, nullable=False, default=0)
+    incident_id = Column(String(36), nullable=True)
+    pipeline = Column(JSON, nullable=False, default=dict)
+    log = Column(JSON, nullable=False, default=list)
+    error = Column(Text, nullable=True)
+    created_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    started_at = Column(UTCDateTime(), nullable=True)
+    completed_at = Column(UTCDateTime(), nullable=True)
+
+
+class AgentEventReceipt(Base):
+    __tablename__ = "agent_event_receipts"
+
+    id = Column(String(64), primary_key=True)
+    agent_id = Column(String(64), nullable=False, index=True)
+    source_event_id = Column(String(255), nullable=False)
+    telemetry_source = Column(String(50), nullable=False, index=True)
+    event_db_id = Column(String(36), nullable=True)
+    status = Column(String(20), nullable=False, default="processing")
+    received_at = Column(UTCDateTime(), nullable=False, default=utc_now, index=True)
+
+    __table_args__ = (
+        Index("idx_agent_source_event", "agent_id", "source_event_id", unique=True),
+    )

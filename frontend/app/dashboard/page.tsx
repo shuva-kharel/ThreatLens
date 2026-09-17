@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Download,
   RefreshCw,
@@ -26,6 +26,7 @@ import {
 } from '@/lib/api'
 
 import { ThreatLensShell } from '@/components/threatlens/shell'
+import { useRealtime } from '@/components/threatlens/realtime'
 
 import {
   EmptyState,
@@ -43,9 +44,11 @@ import {
 } from '@/components/threatlens/format'
 
 export default function DashboardPage() {
+  const { activity, connected: liveConnected } = useRealtime()
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const liveRefresh = useRef<number | undefined>(undefined)
 
   const loadData = () => {
     setLoading(true)
@@ -72,6 +75,15 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadData()
+    const onTelemetry = () => {
+      if (liveRefresh.current) window.clearTimeout(liveRefresh.current)
+      liveRefresh.current = window.setTimeout(loadData, 600)
+    }
+    window.addEventListener('threatlens:telemetry', onTelemetry)
+    return () => {
+      window.removeEventListener('threatlens:telemetry', onTelemetry)
+      if (liveRefresh.current) window.clearTimeout(liveRefresh.current)
+    }
   }, [])
 
   const incidents = dashboard?.incidents ?? []
@@ -128,6 +140,28 @@ export default function DashboardPage() {
             Refresh
           </button>
         </div>
+      </section>
+
+      <section className="live-soc-grid">
+        <article className="panel live-activity-panel">
+          <div className="panel-header"><div className="live-heading"><span className={`live-dot ${liveConnected ? 'online' : ''}`} /><h2>Live SOC Activity</h2></div><small className="text-muted">{liveConnected ? 'LIVE' : 'RECONNECTING'}</small></div>
+          <div className="live-activity-list">
+            {activity.length ? activity.slice(0, 18).map((item) => <Link href={item.href ?? '#'} key={item.id} className="live-activity-row">
+              <time>{formatTime(item.timestamp)}</time><span className={`activity-type ${item.severity ?? ''}`}>{titleCase(item.type)}</span><span className="activity-copy"><strong>{titleCase(item.label)}</strong>{item.detail && <small>{item.detail}</small>}</span>
+            </Link>) : <EmptyState>No backend activity has been recorded.</EmptyState>}
+          </div>
+        </article>
+        <article className="panel live-pipeline-panel">
+          <div className="panel-header"><h2>Live Pipeline</h2><small className="text-muted">Recent backend state</small></div>
+          <div className="pipeline-stages">
+            {[
+              ['observe', 'Observe'], ['detect', 'Detect'], ['correlate', 'Correlate'], ['trace', 'Trace'], ['understand', 'Understand'], ['respond', 'Respond'], ['verify', 'Verify'],
+            ].map(([stage, label]) => {
+              const latest = activity.find((item) => item.stage === stage)
+              return <div className={latest ? 'active' : ''} key={stage}><span>{label}</span><strong>{latest ? titleCase(latest.label) : 'No recent activity'}</strong>{latest && <time>{formatTime(latest.timestamp)}</time>}</div>
+            })}
+          </div>
+        </article>
       </section>
 
       {/* Error */}
@@ -207,6 +241,8 @@ export default function DashboardPage() {
         <article className="metric-card-clean"><strong>{loading ? '-' : dashboard?.overview?.contained_incidents ?? 0}</strong><span>Contained Incidents</span><small>Defensive action recorded</small></article>
         <article className="metric-card-clean"><strong>{loading ? '-' : dashboard?.overview?.critical_incidents ?? 0}</strong><span>Critical Incidents</span><small>{dashboard?.overview?.alerts_24h ?? 0} alerts in 24h</small></article>
         <article className="metric-card-clean"><strong>{loading ? '-' : dashboard?.overview?.repeat_threats ?? 0}</strong><span>Repeat Threats</span><small>{dashboard?.overview?.human_escalations ?? 0} human escalations</small></article>
+        <article className="metric-card-clean"><strong>{loading ? '-' : dashboard?.overview?.agents_online ?? 0}</strong><span>Agents Online</span><small>Heartbeat within 2 minutes</small></article>
+        <article className="metric-card-clean"><strong>{loading ? '-' : dashboard?.responseStats?.total_executions ?? 0}</strong><span>Responses Executed</span><small>{dashboard?.responseStats?.verified_actions ?? 0} verified</small></article>
       </section>
 
       <section className="dashboard-grid">

@@ -6,9 +6,10 @@ import {
   RefreshCw,
   CheckCircle,
 } from 'lucide-react'
-import { api, type HealthDetailed, type ResponsePolicy } from '@/lib/api'
+import { api, type EndpointAgent, type HealthDetailed, type ResponsePolicy } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { ErrorState, LoadingState } from '@/components/threatlens/ui'
+import { formatDate } from '@/components/threatlens/format'
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<HealthDetailed | null>(null)
@@ -25,20 +26,23 @@ export default function SettingsPage() {
   const [cleaningIncidents, setCleaningIncidents] = useState(false)
   const [cleanupMessage, setCleanupMessage] = useState<string | null>(null)
   const [policies, setPolicies] = useState<ResponsePolicy[]>([])
+  const [agents, setAgents] = useState<EndpointAgent[]>([])
 
   const loadHealthData = async () => {
     setLoading(true)
     setError(null)
     try {
-      const [detailedRes, basicRes, policyRes] = await Promise.allSettled([
+      const [detailedRes, basicRes, policyRes, agentRes] = await Promise.allSettled([
         api.healthDetailed(),
         api.health(),
         api.responsePolicies(),
+        api.agents(),
       ])
       if (detailedRes.status === 'fulfilled') setHealth(detailedRes.value)
       if (basicRes.status === 'fulfilled') setBasicHealth(basicRes.value)
       if (policyRes.status === 'fulfilled') setPolicies(policyRes.value)
-      const failures = [detailedRes, basicRes, policyRes].filter((result) => result.status === 'rejected')
+      if (agentRes.status === 'fulfilled') setAgents(agentRes.value)
+      const failures = [detailedRes, basicRes, policyRes, agentRes].filter((result) => result.status === 'rejected')
       if (failures.length) setError(`${failures.length} settings data source(s) could not be loaded.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to connect to health diagnostics.')
@@ -132,6 +136,26 @@ export default function SettingsPage() {
           </section>
 
           <div className="dashboard-grid">
+            <article className="panel">
+              <div className="panel-header"><h2>Endpoint Agents</h2></div>
+              {agents.length ? (
+                <div className="soc-table-wrap">
+                  <table className="soc-table">
+                    <thead><tr><th>Agent</th><th>Address</th><th>Status</th><th>Telemetry Health</th><th>Last Seen</th></tr></thead>
+                    <tbody>{agents.map((agent) => (
+                      <tr key={agent.id}>
+                        <td><strong>{agent.hostname}</strong><span className="block text-[10px] text-muted">{agent.os} · v{agent.version}</span></td>
+                        <td className="font-mono text-[10.5px]">{agent.ip_addresses.join(', ') || 'Unavailable'}<span className="block text-muted">{agent.capabilities.join(', ')}</span></td>
+                        <td><span className="font-mono text-[10.5px]">{agent.status}</span></td>
+                        <td className="font-mono text-[10.5px]"><strong>{agent.events_received}</strong> events<span className="block text-muted">{agent.telemetry_sources.map((source) => source.replaceAll('_', ' ')).join(', ') || 'No sources'}</span><span className="block text-muted">Last event: {formatDate(agent.last_event)}</span></td>
+                        <td className="font-mono text-[10.5px]">{formatDate(agent.last_seen)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : <div className="quiet-empty">No endpoint agents registered.</div>}
+            </article>
+
             <article className="panel">
               <div className="panel-header">
                 <h2>AI Providers</h2>

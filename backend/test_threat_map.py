@@ -53,6 +53,7 @@ async def test_simulator_telemetry_appears_in_threat_map(tmp_path, monkeypatch):
         assert sum(item["event_count"] for item in relationships) >= 4
         assert any(item["severity"] == "critical" for item in relationships)
         assert any("T1110" in item["mitre_techniques"] for item in relationships)
+        assert any("simulator" in item["telemetry_sources"] for item in relationships)
         assert all(item["first_seen"] <= item["last_seen"] for item in relationships)
         assert any(item["incident_ids"] for item in relationships)
     finally:

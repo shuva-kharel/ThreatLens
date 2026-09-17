@@ -302,6 +302,8 @@ class TraceAI:
                     "event_type": event.event_type,
                     "username": event.username,
                     "severity": event.severity,
+                    "telemetry_source": (event.normalized_data or {}).get("telemetry_source"),
+                    "agent_id": (event.normalized_data or {}).get("agent_id"),
                     "description": (
                         event.normalized_data.get("description")
                         if isinstance(event.normalized_data, dict)

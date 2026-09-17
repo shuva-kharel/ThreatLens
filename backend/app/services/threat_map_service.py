@@ -46,6 +46,10 @@ class ThreatMapService:
     def aggregate(self) -> Dict[str, Any]:
         groups: Dict[tuple[str, str, str], Dict[str, Any]] = {}
         alerts = self.db.query(Alert).order_by(Alert.created_at.asc()).all()
+        event_lookup = {
+            event.id: event
+            for event in self.db.query(Event).all()
+        }
 
         for alert in alerts:
             source = alert.source_ip or "Unknown"
@@ -62,6 +66,8 @@ class ThreatMapService:
                 "event_ids": set(),
                 "incident_ids": set(),
                 "mitre_techniques": set(),
+                "telemetry_sources": set(),
+                "agent_ids": set(),
                 "first_seen": alert.created_at,
                 "last_seen": alert.created_at,
             })
@@ -78,6 +84,14 @@ class ThreatMapService:
                 event_id = evidence.get("event_id") if isinstance(evidence, dict) else evidence
                 if event_id:
                     item["event_ids"].add(event_id)
+                    event = event_lookup.get(event_id)
+                    normalized = event.normalized_data or {} if event else {}
+                    source = normalized.get("telemetry_source")
+                    agent_id = normalized.get("agent_id")
+                    if source:
+                        item["telemetry_sources"].add(source)
+                    if agent_id:
+                        item["agent_ids"].add(agent_id)
 
         response_by_incident = defaultdict(set)
         for response in self.db.query(Response).all():
@@ -126,6 +140,8 @@ class ThreatMapService:
                 "incident_count": len(incident_ids),
                 "incident_ids": incident_ids,
                 "mitre_techniques": sorted(item["mitre_techniques"]),
+                "telemetry_sources": sorted(item["telemetry_sources"]),
+                "agent_ids": sorted(item["agent_ids"]),
                 "first_seen": utc_iso(item["first_seen"]),
                 "last_seen": utc_iso(item["last_seen"]),
                 "response_status": response_statuses,

@@ -14,12 +14,19 @@ export default function ThreatMapPage() {
   const [selected, setSelected] = useState<ThreatMapRelationship | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [severity, setSeverity] = useState('all')
+  const [scope, setScope] = useState('all')
+  const [response, setResponse] = useState('all')
+  const [hours, setHours] = useState('168')
+  const [asOf, setAsOf] = useState(0)
 
   const loadData = useCallback((quiet = false) => {
     if (!quiet) setLoading(true)
     setError(null)
     api.threatMap()
       .then((result) => {
+        setAsOf(Date.now())
         setData(result)
         setSelected((current) => {
           if (!current) return result.relationships[0] ?? null
@@ -37,10 +44,30 @@ export default function ThreatMapPage() {
   useEffect(() => {
     loadData()
     const timer = window.setInterval(() => loadData(true), 15000)
-    return () => window.clearInterval(timer)
+    const onTelemetry = () => loadData(true)
+    window.addEventListener('threatlens:telemetry', onTelemetry)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('threatlens:telemetry', onTelemetry)
+    }
   }, [loadData])
 
-  const relationships = data?.relationships ?? []
+  const relationships = useMemo(() => {
+    const cutoff = hours === 'all' ? 0 : asOf - Number(hours) * 60 * 60 * 1000
+    const needle = query.trim().toLowerCase()
+    return (data?.relationships ?? []).filter((item) => {
+      const internal = item.source_classification !== 'public'
+      const haystack = [
+        item.source_ip, item.target, item.attack_type,
+        ...item.mitre_techniques, ...item.telemetry_sources,
+      ].join(' ').toLowerCase()
+      return Date.parse(item.last_seen) >= cutoff
+        && (severity === 'all' || item.severity === severity)
+        && (scope === 'all' || (scope === 'internal') === internal)
+        && (response === 'all' || (response === 'none' ? item.response_status.length === 0 : item.response_status.includes(response)))
+        && (!needle || haystack.includes(needle))
+    })
+  }, [asOf, data, hours, query, response, scope, severity])
   const sources = useMemo(() => new Set(relationships.map((item) => item.source_ip)).size, [relationships])
   const targets = useMemo(() => new Set(relationships.map((item) => item.target)).size, [relationships])
   const incidents = useMemo(() => new Set(relationships.flatMap((item) => item.incident_ids)).size, [relationships])
@@ -65,6 +92,17 @@ export default function ThreatMapPage() {
             <article className="metric-card-clean"><strong>{sources}</strong><span>Observed Sources</span><small>Public and internal</small></article>
             <article className="metric-card-clean"><strong>{targets}</strong><span>Target Assets</span><small>Telemetry destinations</small></article>
             <article className="metric-card-clean"><strong>{incidents}</strong><span>Linked Incidents</span><small>Correlated investigations</small></article>
+          </section>
+
+          <section className="panel mb-4">
+            <div className="panel-header"><h2>Relationship Filters</h2><small className="text-muted">Applied to stored telemetry only</small></div>
+            <div className="grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-5">
+              <input aria-label="Search threat relationships" placeholder="Source, target, attack, MITRE..." value={query} onChange={(event) => setQuery(event.target.value)} />
+              <select aria-label="Severity" value={severity} onChange={(event) => setSeverity(event.target.value)}><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+              <select aria-label="Time range" value={hours} onChange={(event) => setHours(event.target.value)}><option value="24">Last 24 hours</option><option value="168">Last 7 days</option><option value="720">Last 30 days</option><option value="all">All retained data</option></select>
+              <select aria-label="Network scope" value={scope} onChange={(event) => setScope(event.target.value)}><option value="all">Internal and external</option><option value="internal">Internal only</option><option value="external">External only</option></select>
+              <select aria-label="Response status" value={response} onChange={(event) => setResponse(event.target.value)}><option value="all">All response states</option><option value="none">No response</option><option value="verified">Verified</option><option value="failed">Failed</option><option value="pending_approval">Pending approval</option></select>
+            </div>
           </section>
 
           {relationships.length === 0 ? (
@@ -106,6 +144,7 @@ export default function ThreatMapPage() {
                     <div className="prop-row"><span>Incidents</span><strong>{selected.incident_count}</strong></div>
                     <div className="prop-row"><span>Last seen</span><strong className="font-mono">{formatDate(selected.last_seen)}</strong></div>
                     <div className="prop-row"><span>MITRE</span><strong className="font-mono">{selected.mitre_techniques.join(', ') || 'None'}</strong></div>
+                    <div className="prop-row"><span>Telemetry source</span><strong>{selected.telemetry_sources.map(titleCase).join(', ') || 'Unspecified'}</strong></div>
                     <div className="prop-row"><span>Response</span><strong>{selected.response_status.map(titleCase).join(', ') || 'None'}</strong></div>
                     <div className="prop-row"><span>Human escalation</span><strong>{selected.escalation_status.join(', ') || 'None'}</strong></div>
                     {selected.incident_ids[0] && <div className="p-3"><Link href={`/incidents/${selected.incident_ids[0]}`} className="secondary-button inline-flex">Open incident <ArrowRight className="w-3.5 h-3.5 ml-1" /></Link></div>}

@@ -97,6 +97,7 @@ export default function NetworkPage() {
                         <th>Host</th>
                         <th>Events</th>
                         <th>Alerts</th>
+                        <th>Telemetry</th>
                         <th>Last Seen</th>
                       </tr>
                     </thead>
@@ -112,6 +113,7 @@ export default function NetworkPage() {
                               <span className="text-faint">0</span>
                             )}
                           </td>
+                          <td className="font-mono text-[10.5px] text-muted">{host.telemetry_sources.map(titleCase).join(', ') || 'Unknown'}</td>
                           <td className="font-mono text-[10.5px] text-muted">{formatDate(host.last_seen)}</td>
                         </tr>
                       ))}
@@ -167,6 +169,7 @@ export default function NetworkPage() {
                       <th>Event Type</th>
                       <th>Source IP</th>
                       <th>Target Host</th>
+                      <th>Telemetry</th>
                       <th>Timestamp</th>
                     </tr>
                   </thead>
@@ -181,6 +184,7 @@ export default function NetworkPage() {
                         </td>
                         <td className="font-mono text-[11px] text-muted">{conn.source_ip ?? 'Unknown'}</td>
                         <td className="font-mono text-[11px] text-muted">{conn.target_host}</td>
+                        <td className="font-mono text-[10.5px] text-muted">{conn.telemetry_source ? titleCase(conn.telemetry_source) : 'Unknown'}</td>
                         <td className="font-mono text-[10.5px] text-muted">{formatDate(conn.timestamp)}</td>
                       </tr>
                     ))}

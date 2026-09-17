@@ -269,7 +269,7 @@ async def plan_incident_response(
     "/incidents/{incident_id}/execute",
     response_model=ResponseExecutionRecord,
 )
-async def execute_incident_response(
+def execute_incident_response(
     incident_id: str,
     request: ResponseExecutionRequest,
     db: Session = Depends(get_db),
@@ -323,7 +323,7 @@ async def execute_incident_response(
 @router.post(
     "/incidents/{incident_id}/rollback"
 )
-async def rollback_incident_response(
+def rollback_incident_response(
     incident_id: str,
     execution_id: str,
     operator: str = "analyst",
@@ -347,6 +347,7 @@ async def rollback_incident_response(
     result = service.rollback_action(
         execution_id,
         operator=operator,
+        db=db,
     )
 
     if result.get("status") == "error":

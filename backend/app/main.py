@@ -19,9 +19,12 @@ from app.api import (
     netsentinel,
     detections,
     mitre,
+    operations,
     response,
     vulnerabilities,
     health,
+    agents,
+    demo_lab,
 )
 
 from app.db.session import engine, get_db
@@ -215,9 +218,27 @@ app.include_router(
 )
 
 app.include_router(
+    operations.router,
+    prefix="/api/v1",
+    tags=["operations"],
+)
+
+app.include_router(
     health.router,
     prefix="/api/v1",
     tags=["health"],
+)
+
+app.include_router(
+    agents.router,
+    prefix="/api/v1/agents",
+    tags=["agents"],
+)
+
+app.include_router(
+    demo_lab.router,
+    prefix="/api/v1/demo-lab",
+    tags=["demo-lab"],
 )
 
 app.include_router(

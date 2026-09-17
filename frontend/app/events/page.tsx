@@ -80,7 +80,8 @@ export default function EventsPage() {
                     <th>Severity</th>
                     <th>Event Type</th>
                     <th>Source IP</th>
-                    <th>Target Host</th>
+                      <th>Target Host</th>
+                      <th>Telemetry Source</th>
                     <th>User</th>
                     <th>Timestamp</th>
                   </tr>
@@ -102,6 +103,7 @@ export default function EventsPage() {
                       </td>
                       <td className="font-mono text-[11px] text-muted">{event.source_ip ?? '-'}</td>
                       <td className="font-mono text-[11px] text-muted">{event.host}</td>
+                      <td className="font-mono text-[10.5px] text-muted">{titleCase(String(event.normalized_data?.telemetry_source ?? 'unknown'))}</td>
                       <td className="font-mono text-[11px] text-muted">{event.username ?? '-'}</td>
                       <td className="font-mono text-[10px] text-muted">{formatDate(event.timestamp)}</td>
                     </tr>
@@ -132,6 +134,10 @@ export default function EventsPage() {
                 <div className="prop-row">
                   <span>Source IP:</span>
                   <strong className="font-mono text-[11px]">{selectedEvent.source_ip ?? 'None'}</strong>
+                </div>
+                <div className="prop-row">
+                  <span>Telemetry Source:</span>
+                  <strong className="font-mono text-[11px]">{titleCase(String(selectedEvent.normalized_data?.telemetry_source ?? 'Unknown'))}</strong>
                 </div>
                 <div className="prop-row">
                   <span>Target Host:</span>

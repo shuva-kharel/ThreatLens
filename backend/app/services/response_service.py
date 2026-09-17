@@ -41,9 +41,14 @@ class ResponseService:
     @staticmethod
     def _pipeline_record_id(incident_id: str) -> str:
         """Stable database key for one response pipeline run per incident."""
+        execution_mode = (
+            "dry_run"
+            if settings.automatic_response_dry_run
+            else settings.response_execution_mode
+        )
         identity = (
             f"threatlens-response:{settings.response_pipeline_version}:"
-            f"{incident_id}"
+            f"{execution_mode}:{incident_id}"
         )
         return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
 
@@ -52,6 +57,7 @@ class ResponseService:
         proposal_data = details.get("proposal")
         execution_data = details.get("execution")
         audit_data = details.get("audit")
+        audit_history = details.get("audit_history") or []
 
         if proposal_data:
             proposal = ResponseProposal.model_validate(proposal_data)
@@ -63,6 +69,21 @@ class ResponseService:
             audit = ResponseAuditEntry.model_validate(audit_data)
             if not any(item.id == audit.id for item in self.audit_log):
                 self.audit_log.insert(0, audit)
+        for item in audit_history:
+            audit = ResponseAuditEntry.model_validate(item)
+            if not any(existing.id == audit.id for existing in self.audit_log):
+                self.audit_log.insert(0, audit)
+
+    @staticmethod
+    def _broadcast_status(event_type: str, incident_id: str, **data: Any) -> None:
+        try:
+            from app.api.websocket import manager
+            manager.broadcast_sync({
+                "type": event_type,
+                "data": {"incident_id": incident_id, "timestamp": utc_iso(utc_now()), **data},
+            })
+        except Exception as exc:
+            print(f"[ResponseService] Status broadcast error: {exc}")
 
     def load_persisted_outcomes(self, db: Session) -> None:
         """Load durable proposals, executions, and audits into API indexes."""
@@ -211,6 +232,7 @@ class ResponseService:
             else:
                 stage = "playbook_execution"
                 execution = self.execute_action(
+                    db=db,
                     incident_id=incident_id,
                     action=proposal.recommended_action,
                     target=proposal.target,
@@ -221,6 +243,7 @@ class ResponseService:
                         else True
                     ),
                     approved_by="policy_engine" if automatic else "analyst",
+                    endpoint=(incident.target_entities or [None])[0],
                 )
                 audit = next(
                     entry
@@ -240,6 +263,13 @@ class ResponseService:
             details["completed_at"] = utc_iso(utc_now())
             ledger.details = details
             db.commit()
+            self._broadcast_status(
+                "response_status",
+                incident_id,
+                status=details["status"],
+                action=ledger.action,
+                execution_id=(details.get("execution") or {}).get("execution_id"),
+            )
             return details
         except Exception as exc:
             db.rollback()
@@ -260,6 +290,7 @@ class ResponseService:
                 ledger.status = "failed"
                 ledger.details = failure
                 db.commit()
+            self._broadcast_status("response_status", incident_id, status="failed", stage=stage)
             return failure
 
     def execute_action_once(
@@ -300,6 +331,7 @@ class ResponseService:
             target,
             playbook_id or "default",
             str(dry_run).lower(),
+            "dry_run" if dry_run else settings.response_execution_mode,
         ])
         record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         existing = db.get(ResponseDB, record_id)
@@ -339,6 +371,7 @@ class ResponseService:
 
         try:
             record = self.execute_action(
+                db=db,
                 incident_id=incident_id,
                 action=action,
                 target=target,
@@ -346,6 +379,7 @@ class ResponseService:
                 dry_run=dry_run,
                 approved_by=approved_by,
                 parameters=parameters,
+                endpoint=(db.get(Incident, incident_id).target_entities or [None])[0],
             )
             audit = next(
                 entry
@@ -360,6 +394,13 @@ class ResponseService:
                 "audit": audit.model_dump(mode="json"),
             }
             db.commit()
+            self._broadcast_status(
+                "response_status",
+                incident_id,
+                status=record.status.value,
+                action=record.action.value,
+                execution_id=record.execution_id,
+            )
             return record
         except Exception as exc:
             db.rollback()
@@ -775,7 +816,9 @@ class ResponseService:
         playbook_id: Optional[str] = None,
         dry_run: bool = True,
         approved_by: str = "analyst",
-        parameters: Optional[Dict[str, Any]] = None
+        parameters: Optional[Dict[str, Any]] = None,
+        db: Optional[Session] = None,
+        endpoint: Optional[str] = None,
     ) -> ResponseExecutionRecord:
         execution_id = f"EXEC-{uuid.uuid4().hex[:8].upper()}"
         if playbook_id:
@@ -813,7 +856,7 @@ class ResponseService:
                 "timestamp": utc_iso(utc_now()),
             }
 
-        # Simulation execution logic
+        # Dry run never dispatches to an endpoint.
         elif dry_run:
             status = ExecutionStatus.EXECUTED
             result = {
@@ -828,6 +871,28 @@ class ResponseService:
                 "method": "Dry-run validation",
                 "details": "Simulated dry-run verification completed successfully. No state altered.",
                 "timestamp": utc_iso(utc_now())
+            }
+        elif settings.response_execution_mode == "real":
+            if action != ActionType.BLOCK_IP:
+                raise ValueError("Real execution is currently supported only for block_source_ip")
+            if db is None:
+                raise RuntimeError("A database session is required for real agent execution")
+            from app.services.agent_service import AgentService
+
+            agent_outcome = AgentService(db).dispatch_and_wait(
+                execution_id=execution_id,
+                incident_id=incident_id,
+                endpoint=endpoint,
+                action=action.value,
+                target=target,
+            )
+            status = ExecutionStatus.VERIFIED
+            result = agent_outcome
+            verification = {
+                **agent_outcome["verification"],
+                "timestamp": agent_outcome["verification"].get("timestamp") or utc_iso(utc_now()),
+                "agent_id": agent_outcome["agent_id"],
+                "endpoint": agent_outcome["endpoint"],
             }
         else:
             status = ExecutionStatus.EXECUTED
@@ -896,7 +961,7 @@ class ResponseService:
 
         return record
 
-    def rollback_action(self, execution_id: str, operator: str = "analyst") -> Dict[str, Any]:
+    def rollback_action(self, execution_id: str, operator: str = "analyst", db: Optional[Session] = None) -> Dict[str, Any]:
         record = self.executions.get(execution_id)
         if not record:
             return {"status": "error", "message": f"Execution {execution_id} not found"}
@@ -907,7 +972,22 @@ class ResponseService:
         target = record.target
         action = record.action
 
-        if action == ActionType.BLOCK_IP:
+        if record.result.get("mode") == "REAL EXECUTION":
+            if db is None:
+                return {"status": "error", "message": "Database session required for agent rollback"}
+            from app.services.agent_service import AgentService
+            try:
+                rollback_execution_id = f"{execution_id}-rollback"
+                outcome = AgentService(db).dispatch_and_wait(
+                    execution_id=rollback_execution_id,
+                    incident_id=record.incident_id,
+                    endpoint=record.result.get("endpoint"),
+                    action="unblock_source_ip",
+                    target=target,
+                )
+            except Exception as exc:
+                return {"status": "error", "message": str(exc)}
+        elif action == ActionType.BLOCK_IP:
             self.blocked_ips.pop(target, None)
         elif action == ActionType.DISABLE_ACCOUNT:
             self.disabled_accounts.pop(target, None)
@@ -921,7 +1001,8 @@ class ResponseService:
             "rolled_back_at": utc_iso(utc_now()),
             "operator": operator,
             "restored_target": target,
-            "message": f"Rollback successfully restored previous defensive state for {target}."
+            "message": f"Rollback successfully restored previous defensive state for {target}.",
+            **({"agent_result": outcome} if record.result.get("mode") == "REAL EXECUTION" else {}),
         }
 
         # Audit rollback
@@ -940,6 +1021,29 @@ class ResponseService:
             dry_run=False
         )
         self.audit_log.insert(0, audit_entry)
+
+        if db is not None:
+            for ledger in db.query(ResponseDB).filter(ResponseDB.incident_id == record.incident_id).all():
+                details = dict(ledger.details or {})
+                execution = details.get("execution") or {}
+                if execution.get("execution_id") != execution_id:
+                    continue
+                history = list(details.get("audit_history") or [])
+                if details.get("audit") and not history:
+                    history.append(details["audit"])
+                history.append(audit_entry.model_dump(mode="json"))
+                details["execution"] = record.model_dump(mode="json")
+                details["audit_history"] = history
+                ledger.details = details
+                break
+            db.commit()
+            self._broadcast_status(
+                "response_rolled_back",
+                record.incident_id,
+                status="rolled_back",
+                action=record.action.value,
+                execution_id=execution_id,
+            )
 
         return {
             "status": "success",

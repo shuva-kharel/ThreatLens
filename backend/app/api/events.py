@@ -14,7 +14,7 @@ def verify_api_key(x_api_key: str = Header(...)):
     return True
 
 @router.post("")  # POST /api/v1/events
-async def create_event(
+def create_event(
     event: EventCreate,
     api_key_valid: bool = Depends(verify_api_key),
     db: Session = Depends(get_db)
@@ -31,7 +31,7 @@ async def create_event(
     }
 
 @router.get("")  # GET /api/v1/events
-async def list_events(
+def list_events(
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
@@ -40,7 +40,7 @@ async def list_events(
     return [EventSchema.model_validate(e) for e in events]
 
 @router.post("/batch", response_model=dict)
-async def create_events_batch(
+def create_events_batch(
     batch: EventBatch,
     api_key_valid: bool = Depends(verify_api_key),
     db: Session = Depends(get_db)

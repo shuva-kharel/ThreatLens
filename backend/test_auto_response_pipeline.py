@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.config import settings
 from app.core.time import utc_now
 from app.models.database import Alert, Base, Event, Incident, Response
-from app.models.response_models import ResponseProposal
+from app.models.response_models import ActionType, ResponseProposal
 from app.models.schemas import EventCreate, Severity
 from app.services.event_service import EventService
 from app.services.response_service import ResponseService
@@ -217,3 +217,29 @@ def test_response_agent_failure_does_not_lose_incident(
     ledger = pipeline_db.query(Response).one()
     assert ledger.status == "failed"
     assert ledger.details["failure"]["stage"] == "response_agent"
+
+
+def test_rollback_is_persisted_and_restored(pipeline_db):
+    submit_fresh_brute_force(pipeline_db, "198.51.100.81")
+    incident = pipeline_db.query(Incident).one()
+    service = ResponseService()
+    execution = service.execute_action_once(
+        pipeline_db,
+        incident_id=incident.id,
+        action=ActionType.BLOCK_IP,
+        target="198.51.100.81",
+        playbook_id="PB-BLOCK-IP",
+        dry_run=False,
+        approved_by="test_operator",
+    )
+
+    result = service.rollback_action(execution.execution_id, db=pipeline_db)
+    assert result["status"] == "success"
+
+    ResponseService._instance = None
+    restored = ResponseService()
+    restored.load_persisted_outcomes(pipeline_db)
+    record = restored.executions[execution.execution_id]
+    assert record.status.value == "rolled_back"
+    assert record.rollback_available is False
+    assert any(entry.rollback for entry in restored.audit_log)

@@ -117,7 +117,7 @@ class DetectionEngine:
         5 or more failed SSH logins within 60 seconds
         from the same source IP and host.
         """
-        if event.event_type != "ssh_failed_login":
+        if event.event_type not in {"ssh_failed_login", "login_failed"}:
             return None
 
         event_time = event.timestamp or utc_now()
@@ -126,7 +126,7 @@ class DetectionEngine:
         recent_failures = (
             self.db.query(Event)
             .filter(
-                Event.event_type == "ssh_failed_login",
+                Event.event_type.in_(["ssh_failed_login", "login_failed"]),
                 Event.source_ip == event.source_ip,
                 Event.timestamp >= cutoff,
                 Event.timestamp <= event_time,
@@ -139,7 +139,7 @@ class DetectionEngine:
             evidence_events = (
                 self.db.query(Event)
                 .filter(
-                    Event.event_type == "ssh_failed_login",
+                    Event.event_type.in_(["ssh_failed_login", "login_failed"]),
                     Event.source_ip == event.source_ip,
                     Event.timestamp >= cutoff,
                     Event.timestamp <= event_time,
@@ -241,7 +241,7 @@ class DetectionEngine:
         Successful login following 3 or more failed logins
         from the same source and host within 5 minutes.
         """
-        if event.event_type != "ssh_success":
+        if event.event_type not in {"ssh_success", "login_success"}:
             return None
 
         event_time = event.timestamp or utc_now()
@@ -250,7 +250,7 @@ class DetectionEngine:
         prior_failures = (
             self.db.query(Event)
             .filter(
-                Event.event_type == "ssh_failed_login",
+                Event.event_type.in_(["ssh_failed_login", "login_failed"]),
                 Event.source_ip == event.source_ip,
                 Event.timestamp >= cutoff,
                 Event.timestamp <= event_time,
@@ -283,7 +283,7 @@ class DetectionEngine:
         event: Event,
     ) -> Optional[AlertCreate]:
         """Rule HOST-001: Known suspicious command patterns."""
-        if event.event_type != "command_execution":
+        if event.event_type not in {"command_execution", "process_creation"}:
             return None
 
         suspicious_patterns = [

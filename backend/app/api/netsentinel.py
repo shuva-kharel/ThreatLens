@@ -172,6 +172,16 @@ async def get_network_hosts(
             "last_seen": utc_iso(
                 host[2]
             ),
+            "telemetry_sources": sorted({
+                (event.normalized_data or {}).get("telemetry_source")
+                for event in db.query(Event).filter(Event.host == host[0]).all()
+                if (event.normalized_data or {}).get("telemetry_source")
+            }),
+            "agent_ids": sorted({
+                (event.normalized_data or {}).get("agent_id")
+                for event in db.query(Event).filter(Event.host == host[0]).all()
+                if (event.normalized_data or {}).get("agent_id")
+            }),
         })
 
     return result
@@ -220,6 +230,8 @@ async def get_network_connections(
             "target_host": event.host,
             "event_type": event.event_type,
             "severity": event.severity,
+            "telemetry_source": (event.normalized_data or {}).get("telemetry_source"),
+            "agent_id": (event.normalized_data or {}).get("agent_id"),
         })
 
     return connections

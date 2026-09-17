@@ -110,6 +110,7 @@ class EventService:
         """
 
         event = self.create_event(event_data)
+        self._broadcast_event(event)
 
         # ---------------------------------------------------------------------
         # Detection
@@ -756,6 +757,27 @@ class EventService:
         self.db.flush()
 
         return incident
+
+    # =========================================================================
+    # BROADCAST EVENT
+    # =========================================================================
+
+    def _broadcast_event(self, event: Event):
+        try:
+            from app.api.websocket import manager
+            manager.broadcast_sync({
+                "type": "event",
+                "data": {
+                    "id": event.id,
+                    "event_type": event.event_type,
+                    "source_ip": event.source_ip,
+                    "host": event.host,
+                    "severity": event.severity,
+                    "timestamp": utc_iso(event.timestamp),
+                },
+            })
+        except Exception as exc:
+            print(f"[EventService] Event broadcast error: {exc}")
 
     # =========================================================================
     # BROADCAST ALERT

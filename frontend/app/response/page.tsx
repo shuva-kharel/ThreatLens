@@ -23,6 +23,7 @@ import {
   type ResponseExecutionRecord,
   type ResponsePlaybook,
   type ResponsePolicy,
+  type ResponseProposal,
   type ResponseAuditEntry,
   type Escalation,
 } from '@/lib/api'
@@ -30,13 +31,14 @@ import { ThreatLensShell } from '@/components/threatlens/shell'
 import { EmptyState, ErrorState, LoadingState } from '@/components/threatlens/ui'
 import { formatDate, titleCase } from '@/components/threatlens/format'
 
-type TabType = 'escalations' | 'executions' | 'playbooks' | 'policies' | 'audit'
+type TabType = 'executions' | 'approvals' | 'verification' | 'rollback' | 'escalations' | 'playbooks' | 'policies' | 'audit'
 
 export default function ResponseCenterPage() {
   const [activeTab, setActiveTab] = useState<TabType>('executions')
   const [playbooks, setPlaybooks] = useState<ResponsePlaybook[]>([])
   const [policies, setPolicies] = useState<ResponsePolicy[]>([])
   const [executions, setExecutions] = useState<ResponseExecutionRecord[]>([])
+  const [proposals, setProposals] = useState<ResponseProposal[]>([])
   const [auditLog, setAuditLog] = useState<ResponseAuditEntry[]>([])
   const [escalations, setEscalations] = useState<Escalation[]>([])
   const [loading, setLoading] = useState(true)
@@ -54,13 +56,15 @@ export default function ResponseCenterPage() {
       api.responsePlaybooks(),
       api.responsePolicies(),
       api.responseExecutions(),
+      api.responseProposals(),
       api.responseAudit(),
       api.responseEscalations(),
     ])
-      .then(([pb, pol, exec, aud, esc]) => {
+      .then(([pb, pol, exec, prop, aud, esc]) => {
         setPlaybooks(pb)
         setPolicies(pol)
         setExecutions(exec)
+        setProposals(prop)
         setAuditLog(aud)
         setEscalations(esc)
         if (pb.length > 0 && !selectedPlaybook) setSelectedPlaybook(pb[0])
@@ -74,6 +78,9 @@ export default function ResponseCenterPage() {
 
   useEffect(() => {
     loadData()
+    const onTelemetry = () => loadData()
+    window.addEventListener('threatlens:telemetry', onTelemetry)
+    return () => window.removeEventListener('threatlens:telemetry', onTelemetry)
   }, [])
 
   const handleTogglePolicy = async (policy: ResponsePolicy, key: 'auto_execute' | 'enabled' | 'requires_approval') => {
@@ -100,8 +107,14 @@ export default function ResponseCenterPage() {
     }
   }
 
-  const pendingApprovals = executions.filter((e) => e.status === 'pending_approval')
+  const pendingApprovals = proposals.filter((proposal) => proposal.requires_approval || proposal.policy_evaluation?.requires_approval)
   const verifiedExecutions = executions.filter((e) => e.status === 'verified' || e.status === 'executed')
+  const rollbackHistory = executions.filter((e) => e.status === 'rolled_back')
+  const visibleExecutions = activeTab === 'verification'
+      ? verifiedExecutions
+      : activeTab === 'rollback'
+        ? rollbackHistory
+        : executions
 
   return (
     <ThreatLensShell>
@@ -112,7 +125,7 @@ export default function ResponseCenterPage() {
               DEFENSIVE RESPONSE SUBSYSTEM
             </span>
             <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-accent-soft text-accent border border-accent-border">
-              DEMO MODE ACTIVE
+              POLICY CONTROLLED
             </span>
           </div>
           <h1>AI Security Response Center</h1>
@@ -156,14 +169,22 @@ export default function ResponseCenterPage() {
         </article>
 
         <article className="metric-card-clean">
-          <strong>{auditLog.length}</strong>
-          <span>Audit Trail Records</span>
-          <small>Append-only immutable record</small>
+          <strong>{pendingApprovals.length}</strong>
+          <span>Pending Approval</span>
+          <small>{escalations.length} human escalations</small>
         </article>
       </section>
 
       {/* Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-border mb-4">
+      <div className="flex items-center gap-2 border-b border-border mb-4 overflow-x-auto">
+        {([
+          ['executions', `Active / Recent (${executions.length})`],
+          ['approvals', `Pending Approval (${pendingApprovals.length})`],
+          ['verification', `Verification (${verifiedExecutions.length})`],
+          ['rollback', `Rollback History (${rollbackHistory.length})`],
+        ] as Array<[TabType, string]>).map(([tab, label]) => (
+          <button key={tab} className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === tab ? 'border-accent text-text' : 'border-transparent text-muted hover:text-text'}`} onClick={() => setActiveTab(tab)}>{label}</button>
+        ))}
         <button
           className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'escalations'
             ? 'border-danger text-text'
@@ -172,15 +193,6 @@ export default function ResponseCenterPage() {
           onClick={() => setActiveTab('escalations')}
         >
           Human Escalations ({escalations.length})
-        </button>
-        <button
-          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'executions'
-            ? 'border-accent text-text'
-            : 'border-transparent text-muted hover:text-text'
-            }`}
-          onClick={() => setActiveTab('executions')}
-        >
-          Executions &amp; Jobs ({executions.length})
         </button>
         <button
           className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'playbooks'
@@ -223,19 +235,20 @@ export default function ResponseCenterPage() {
           ) : (
             <div className="soc-table-wrap">
               <table className="soc-table">
-                <thead><tr><th>Severity</th><th>Source</th><th>Target</th><th>Recurrences</th><th>Current Incident</th><th>Previous Response</th><th>Last Activity</th><th>Status</th><th>Assigned</th></tr></thead>
+                <thead><tr><th>Severity</th><th>Source / Target</th><th>Recurrences</th><th>Incident</th><th>Previous Response</th><th>Previous Verification</th><th>Reason</th><th>Slack</th><th>Last Activity</th><th>Status / Assigned</th></tr></thead>
                 <tbody>
                   {escalations.map((item) => (
                     <tr key={item.id}>
                       <td><span className="font-mono text-[11px]">{item.severity.toUpperCase()}</span></td>
-                      <td className="font-mono text-[11px]">{item.source_ip}</td>
-                      <td className="font-mono text-[11px]">{item.target ?? 'Unknown'}</td>
+                      <td className="font-mono text-[11px]">{item.source_ip}<span className="block text-muted">{item.target ?? 'Unknown'}</span></td>
                       <td className="font-mono text-[11px]">{item.recurrence_count}</td>
                       <td><Link href={`/incidents/${item.current_incident_id}`} className="font-mono text-[11px] text-accent underline">{item.current_incident_id.slice(0, 8)}...</Link></td>
                       <td className="font-mono text-[11px]">{titleCase(item.previous_action)}</td>
+                      <td className="font-mono text-[11px] text-muted">{formatDate(item.previous_verification_at)}</td>
+                      <td className="text-[11px] max-w-[260px]">{item.reason}</td>
+                      <td className="font-mono text-[10px]">{item.slack_notification_status}</td>
                       <td className="font-mono text-[11px] text-muted">{formatDate(item.last_activity_at)}</td>
-                      <td><span className="font-mono text-[10px] text-danger">{item.status}</span></td>
-                      <td className="font-mono text-[11px]">{item.assigned_to ?? 'Unassigned'}</td>
+                      <td><span className="font-mono text-[10px] text-danger">{item.status}</span><span className="block font-mono text-[10px]">{item.assigned_to ?? 'Unassigned'}</span></td>
                     </tr>
                   ))}
                 </tbody>
@@ -243,12 +256,21 @@ export default function ResponseCenterPage() {
             </div>
           )}
         </section>
-      ) : activeTab === 'executions' ? (
+      ) : activeTab === 'approvals' ? (
+        <section className="panel">
+          <div className="panel-header"><h2>Pending Approval</h2><small className="text-muted">Policy-gated response proposals</small></div>
+          {pendingApprovals.length === 0 ? <EmptyState title="No pending approvals" description="No response proposals currently require an analyst decision." /> : (
+            <div className="soc-table-wrap"><table className="soc-table"><thead><tr><th>Incident</th><th>Action</th><th>Target</th><th>Playbook</th><th>Confidence</th><th>Risk</th><th>Policy reason</th></tr></thead><tbody>
+              {pendingApprovals.map((proposal) => <tr key={`${proposal.incident_id}:${proposal.playbook_id}`}><td><Link href={`/incidents/${proposal.incident_id}`} className="font-mono text-[11px] text-accent underline">{proposal.incident_id.slice(0, 8)}...</Link></td><td>{titleCase(proposal.recommended_action)}</td><td className="font-mono text-[11px]">{proposal.target}</td><td className="font-mono text-[11px]">{proposal.playbook_id}</td><td>{Math.round(proposal.confidence * 100)}%</td><td>{titleCase(proposal.risk_level)}</td><td className="text-[11px]">{proposal.policy_evaluation?.reason ?? proposal.reason}</td></tr>)}
+            </tbody></table></div>
+          )}
+        </section>
+      ) : ['executions', 'verification', 'rollback'].includes(activeTab) ? (
         <div className="dashboard-grid">
           {/* Execution List */}
           <section className="panel">
             <div className="panel-header">
-              <h2>Recent Defensive Actions</h2>
+              <h2>{activeTab === 'verification' ? 'Verified Responses' : activeTab === 'rollback' ? 'Rollback History' : 'Active and Recent Responses'}</h2>
               <div className="toolbar">
                 <input
                   placeholder="Filter executions..."
@@ -258,7 +280,7 @@ export default function ResponseCenterPage() {
                 />
               </div>
             </div>
-            {executions.length === 0 ? (
+            {visibleExecutions.length === 0 ? (
               <EmptyState
                 title="No response actions yet"
                 description="Run an attack simulation or trigger an AI response from Incident Detail to observe containment actions."
@@ -277,7 +299,7 @@ export default function ResponseCenterPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {executions
+                    {visibleExecutions
                       .filter(
                         (e) =>
                           `${e.execution_id} ${e.incident_id} ${e.action} ${e.target} ${e.status}`
