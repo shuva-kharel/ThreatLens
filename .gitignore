@@ -1,0 +1,546 @@
+# =============================================================================
+# MiniSOC ThreatLens — Root .gitignore
+# =============================================================================
+# One .gitignore for the entire monorepo (backend + frontend).
+# =============================================================================
+
+
+# =============================================================================
+# 🔐 SECRETS & ENVIRONMENT (CRITICAL — NEVER COMMIT)
+# =============================================================================
+
+# Environment files
+.env
+.env.*
+!.env.example
+*.env
+!.env.example
+
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets/
+credentials.json
+service-account.json
+
+# API keys (backup catch-all)
+*api_key*
+*apikey*
+!*api_key*.py
+!*api_key*.ts
+!*api_key*.md
+
+
+# =============================================================================
+# 🐍 PYTHON (Backend)
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Translations
+*.mo
+*.pot
+
+# Django (in case you add it later)
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask (in case you add it later)
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+.pdm-python
+.pdm-build/
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv*/
+virtualenv/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# mkdocs
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+
+# =============================================================================
+# 🟢 NODE / FRONTEND
+# =============================================================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+yarn-error.log
+.yarnrc.yml
+.pnpm-store/
+
+# Production builds
+.next/
+out/
+build/
+dist/
+storybook-static/
+.turbo/
+.swc/
+
+# Environment files (already covered above but explicit for Next.js)
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Misc
+.DS_Store
+*.pem
+.npm/
+.eslintcache
+.stylelintcache
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel / Netlify
+.vercel
+.netlify
+
+
+# =============================================================================
+# 💾 DATABASES & DATA (LOCAL DEV DATA — DON'T COMMIT)
+# =============================================================================
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+minisoc.db
+minisoc.db-journal
+
+# PostgreSQL
+*.pgdump
+*.sql.gz
+
+# MySQL
+*.sql.bz2
+
+# Data exports
+data/exports/
+*.csv
+*.xlsx
+*.xls
+!docs/**/*.csv
+
+# Generated reports
+reports/
+exports/
+incidents_export/
+
+
+# =============================================================================
+# 📝 LOGS
+# =============================================================================
+
+*.log
+logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.pid
+*.pid.lock
+*.seed
+*.pid
+*.log
+
+
+# =============================================================================
+# 💻 OS & EDITOR FILES
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# IDE — VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.code-workspace
+
+# IDE — JetBrains (PyCharm, WebStorm, IntelliJ)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# IDE — Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# IDE — Vim / Neovim
+*.swp
+*.swo
+*.swn
+.netrwhist
+.tags
+.tags.lock
+
+# IDE — Eclipse
+.settings/
+.project
+.classpath
+.factorypath
+
+# IDE — Atom
+.atom/
+.atom-build
+
+
+# =============================================================================
+# 🧪 TESTING & CI
+# =============================================================================
+
+# Test artifacts
+test-results/
+test-report/
+junit.xml
+.pytest_cache/
+.coverage*
+htmlcov/
+coverage/
+.sonar/
+cypress/videos/
+cypress/screenshots/
+playwright-report/
+test-results/
+
+# Temporary test data
+tmp/
+temp/
+.tmp/
+.temp/
+tmpdata/
+
+
+# =============================================================================
+# 🏗️ BUILD OUTPUTS & DISTRIBUTION
+# =============================================================================
+
+# Compiled output
+*.pyc
+*.pyo
+*.class
+*.jar
+*.war
+
+# Bundled output
+*.bundle.js
+*.bundle.css
+*.min.js.map
+*.min.css.map
+
+# Docker
+*.dockerignore
+docker-compose.override.yml
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.tgz
+!assets/**/*.zip
+
+# Installer / packages
+*.msi
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+
+
+# =============================================================================
+# 📚 DOCUMENTATION & GENERATED FILES
+# =============================================================================
+
+# Generated API docs
+docs/api/generated/
+openapi.json
+swagger.json
+
+# Generated diagrams
+*.png.tmp
+diagrams/generated/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*~
+*.save
+
+
+# =============================================================================
+# ☁️ CLOUD & DEPLOYMENT
+# =============================================================================
+
+# AWS
+.aws/
+*.aws/
+
+# Google Cloud
+gcloud/
+*.gcp.json
+
+# Azure
+.azure/
+azure-pipelines-cache/
+
+# Heroku
+.heroku/
+
+# Railway
+.railway/
+
+# Render
+.render/
+
+# Fly.io
+.fly/
+
+
+# =============================================================================
+# 🔒 SECURITY TOOLS (Local-only)
+# =============================================================================
+
+# Bandit
+.bandit
+
+# Safety
+.safety-db
+safety-report.json
+
+# TFLint / TFState
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Vault
+vault-token
+.vault-token
+
+# GPG
+*.gpg
+secring.*
+
+
+# =============================================================================
+# 🎮 DEMO & TEMPORARY FILES
+# =============================================================================
+
+# Demo scripts that contain secrets
+demo_local.sh
+demo_local.bat
+demo_*.local.*
+
+# Simulation output
+simulation_output/
+simulation_results/
+attack_output/
+
+# Trace output
+traces/
+*.trace
+
+
+# =============================================================================
+# 🧰 MISC & TOOLING
+# =============================================================================
+
+# Jupyter / Notebook
+*.ipynb_checkpoints/
+
+# Notebook kernel
+.ipython/
+
+# Python .env files
+*.pyc
+*.pyo
+
+# Lock files we want to KEEP (uncomment to ignore):
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+# Pipfile.lock
+# poetry.lock
+
+# Misc
+.cache/
+.history/
+.rumprun/
+*.swn
+*.swm
