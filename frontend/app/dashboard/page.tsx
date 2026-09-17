@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { Download, RefreshCw, Play } from 'lucide-react'
+import { Download, RefreshCw, Play, ShieldCheck, ShieldAlert, ArrowRight, CheckCircle, Clock, Shield } from 'lucide-react'
 import { downloadUrl, loadDashboardData, type Alert, type DashboardData, type Incident } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { EmptyState, ErrorState, LoadingState, SeverityBadge } from '@/components/threatlens/ui'
@@ -158,6 +158,77 @@ export default function DashboardPage() {
             )}
           </div>
         </article>
+      </section>
+
+      {/* Response Automation Section */}
+      <section className="panel mb-6">
+        <div className="panel-header flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-sm font-semibold">AI Defensive Response Automation</h2>
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              {dashboard?.responseStats?.response_agent_status ? titleCase(dashboard.responseStats.response_agent_status) : 'Operational'}
+            </span>
+          </div>
+          <Link
+            href="/response"
+            className="text-[11px] text-muted hover:text-text flex items-center gap-1 hover:underline"
+          >
+            Open Response Center <ArrowRight className="w-3 h-3" />
+          </Link>
+        </div>
+        <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Proposals</span>
+            <strong className="text-xl font-mono text-text">
+              {loading ? '-' : String(dashboard?.responseStats?.response_proposals ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">AI formulated</span>
+          </div>
+
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Automated Exec</span>
+            <strong className="text-xl font-mono text-text">
+              {loading ? '-' : String(dashboard?.responseStats?.automated_executions ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">Policy auto-fired</span>
+          </div>
+
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Awaiting Approval</span>
+            <strong className="text-xl font-mono text-amber-400">
+              {loading ? '-' : String(dashboard?.responseStats?.actions_awaiting_approval ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">Manual review</span>
+          </div>
+
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Verified Actions</span>
+            <strong className="text-xl font-mono text-emerald-400">
+              {loading ? '-' : String(dashboard?.responseStats?.verified_actions ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">Telemetry checked</span>
+          </div>
+
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Active Policies</span>
+            <strong className="text-xl font-mono text-text">
+              {loading ? '-' : String(dashboard?.responseStats?.active_response_policies ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">
+              {dashboard?.responseStats?.auto_execute_policies ?? 0} auto-execute
+            </span>
+          </div>
+
+          <div className="bg-surface-raised border border-border p-3 rounded flex flex-col">
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted mb-1">Total Playbooks</span>
+            <strong className="text-xl font-mono text-text">
+              {loading ? '-' : String(dashboard?.responseStats?.total_playbooks ?? 0)}
+            </strong>
+            <span className="text-[10.5px] text-muted mt-1">Bounded routines</span>
+          </div>
+        </div>
       </section>
 
       {/* Lower Grid: Correlated Incidents & Recent Alerts */}

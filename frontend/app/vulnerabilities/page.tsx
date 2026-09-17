@@ -76,33 +76,34 @@ export default function VulnerabilityCenterPage() {
       {error && <ErrorState error={error} retry={loadData} />}
 
       {/* Metrics Row */}
-      <section className="metric-grid mb-4">
-        <div className="metric-card">
-          <span className="metric-label">Tracked Vulnerabilities</span>
-          <strong className="metric-value">{vulnerabilities.length}</strong>
-          <small className="metric-meta">Known CVEs &amp; configuration weaknesses</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Critical / High Severity</span>
-          <strong className="metric-value">
+      <section className="metric-grid">
+        <article className="metric-card-clean">
+          <strong>{vulnerabilities.length}</strong>
+          <span>Tracked Vulnerabilities</span>
+          <small>Known CVEs &amp; configuration weaknesses</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>
             {vulnerabilities.filter((v) => v.severity === 'critical' || v.severity === 'high').length}
           </strong>
-          <small className="metric-meta">Requiring active mitigation</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Auto-Response Eligible</span>
-          <strong className="metric-value">
-            {vulnerabilities.filter((v) => v.auto_response_eligible).length}
-          </strong>
-          <small className="metric-meta">Low-risk hardening playbooks</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Affected Internal Assets</span>
-          <strong className="metric-value">
+          <span>Critical / High Severity</span>
+          <small>Requiring active mitigation</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>{vulnerabilities.filter((v) => v.auto_response_eligible).length}</strong>
+          <span>Auto-Response Eligible</span>
+          <small>Low-risk hardening playbooks</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>
             {Array.from(new Set(vulnerabilities.flatMap((v) => v.affected_assets))).length}
           </strong>
-          <small className="metric-meta">Observed across telemetry</small>
-        </div>
+          <span>Affected Internal Assets</span>
+          <small>Observed across telemetry</small>
+        </article>
       </section>
 
       {loading ? (
@@ -123,8 +124,8 @@ export default function VulnerabilityCenterPage() {
               </div>
             </div>
 
-            <div className="table-wrap">
-              <table className="data-table">
+            <div className="soc-table-wrap">
+              <table className="soc-table">
                 <thead>
                   <tr>
                     <th>CVE ID</th>
@@ -147,13 +148,12 @@ export default function VulnerabilityCenterPage() {
                       <td className="font-mono text-[11px] text-muted">{vuln.affected_product}</td>
                       <td>
                         <span
-                          className={`text-[10.5px] font-mono uppercase px-1.5 py-0.5 rounded ${
-                            vuln.severity === 'critical'
+                          className={`text-[10.5px] font-mono uppercase px-1.5 py-0.5 rounded ${vuln.severity === 'critical'
                               ? 'bg-sev-critical-bg text-sev-critical border border-sev-critical-border'
                               : vuln.severity === 'high'
-                              ? 'bg-sev-high-bg text-sev-high border border-sev-high-border'
-                              : 'bg-sev-medium-bg text-sev-medium border border-sev-medium-border'
-                          }`}
+                                ? 'bg-sev-high-bg text-sev-high border border-sev-high-border'
+                                : 'bg-sev-medium-bg text-sev-medium border border-sev-medium-border'
+                            }`}
                         >
                           {vuln.severity}
                         </span>
@@ -187,13 +187,12 @@ export default function VulnerabilityCenterPage() {
                       {selectedVuln.cve_id}
                     </span>
                     <span
-                      className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
-                        selectedVuln.severity === 'critical'
+                      className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${selectedVuln.severity === 'critical'
                           ? 'bg-sev-critical-bg text-sev-critical'
                           : selectedVuln.severity === 'high'
-                          ? 'bg-sev-high-bg text-sev-high'
-                          : 'bg-sev-medium-bg text-sev-medium'
-                      }`}
+                            ? 'bg-sev-high-bg text-sev-high'
+                            : 'bg-sev-medium-bg text-sev-medium'
+                        }`}
                     >
                       {selectedVuln.severity}
                     </span>

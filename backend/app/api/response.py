@@ -85,6 +85,17 @@ async def get_audit_log(service: ResponseService = Depends(get_service)):
     """Retrieve append-only SOC response audit trail."""
     return service.audit_log
 
+@router.get("/stats", response_model=Dict[str, Any])
+async def get_response_stats(service: ResponseService = Depends(get_service)):
+    """Retrieve aggregated stats for defensive response automation."""
+    return service.get_stats()
+
+@router.get("/proposals", response_model=List[ResponseProposal])
+async def list_proposals(service: ResponseService = Depends(get_service)):
+    """Retrieve all formulated AI response proposals."""
+    return list(service.proposals.values())
+
+
 # -----------------------------------------------------------------------------
 # 4. Incident Response Integration Endpoints
 # -----------------------------------------------------------------------------

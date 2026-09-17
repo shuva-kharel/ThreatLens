@@ -130,69 +130,68 @@ export default function ResponseCenterPage() {
       {error && <ErrorState error={error} retry={loadData} />}
 
       {/* Metrics Row */}
-      <section className="metric-grid mb-4">
-        <div className="metric-card">
-          <span className="metric-label">Approved Playbooks</span>
-          <strong className="metric-value">{playbooks.length}</strong>
-          <small className="metric-meta">Deterministic defensive recipes</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Active Policies</span>
-          <strong className="metric-value">
+      <section className="metric-grid">
+        <article className="metric-card-clean">
+          <strong>{playbooks.length}</strong>
+          <span>Approved Playbooks</span>
+          <small>Deterministic defensive recipes</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>
             {policies.filter((p) => p.enabled).length} / {policies.length}
           </strong>
-          <small className="metric-meta">Autonomous gates &amp; approval boundaries</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Total Executions</span>
-          <strong className="metric-value">{executions.length}</strong>
-          <small className="metric-meta">{verifiedExecutions.length} verified safe</small>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Audit Trail Records</span>
-          <strong className="metric-value">{auditLog.length}</strong>
-          <small className="metric-meta">Append-only immutable record</small>
-        </div>
+          <span>Active Policies</span>
+          <small>Autonomous gates &amp; approval boundaries</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>{executions.length}</strong>
+          <span>Total Executions</span>
+          <small>{verifiedExecutions.length} verified safe</small>
+        </article>
+
+        <article className="metric-card-clean">
+          <strong>{auditLog.length}</strong>
+          <span>Audit Trail Records</span>
+          <small>Append-only immutable record</small>
+        </article>
       </section>
 
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-border mb-4">
         <button
-          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${
-            activeTab === 'executions'
-              ? 'border-accent text-text'
-              : 'border-transparent text-muted hover:text-text'
-          }`}
+          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'executions'
+            ? 'border-accent text-text'
+            : 'border-transparent text-muted hover:text-text'
+            }`}
           onClick={() => setActiveTab('executions')}
         >
           Executions &amp; Jobs ({executions.length})
         </button>
         <button
-          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${
-            activeTab === 'playbooks'
-              ? 'border-accent text-text'
-              : 'border-transparent text-muted hover:text-text'
-          }`}
+          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'playbooks'
+            ? 'border-accent text-text'
+            : 'border-transparent text-muted hover:text-text'
+            }`}
           onClick={() => setActiveTab('playbooks')}
         >
           Playbook Registry ({playbooks.length})
         </button>
         <button
-          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${
-            activeTab === 'policies'
-              ? 'border-accent text-text'
-              : 'border-transparent text-muted hover:text-text'
-          }`}
+          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'policies'
+            ? 'border-accent text-text'
+            : 'border-transparent text-muted hover:text-text'
+            }`}
           onClick={() => setActiveTab('policies')}
         >
           Policy Engine ({policies.length})
         </button>
         <button
-          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${
-            activeTab === 'audit'
-              ? 'border-accent text-text'
-              : 'border-transparent text-muted hover:text-text'
-          }`}
+          className={`px-3 py-2 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'audit'
+            ? 'border-accent text-text'
+            : 'border-transparent text-muted hover:text-text'
+            }`}
           onClick={() => setActiveTab('audit')}
         >
           Append-Only Audit Log ({auditLog.length})
@@ -222,8 +221,8 @@ export default function ResponseCenterPage() {
                 description="Run an attack simulation or trigger an AI response from Incident Detail to observe containment actions."
               />
             ) : (
-              <div className="table-wrap">
-                <table className="data-table">
+              <div className="soc-table-wrap">
+                <table className="soc-table">
                   <thead>
                     <tr>
                       <th>Execution ID</th>
@@ -263,13 +262,12 @@ export default function ResponseCenterPage() {
                           <td className="font-mono text-[11px]">{exec.target}</td>
                           <td>
                             <span
-                              className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${
-                                exec.status === 'verified'
-                                  ? 'bg-success-bg text-success border border-success-border'
-                                  : exec.status === 'rolled_back'
+                              className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${exec.status === 'verified'
+                                ? 'bg-success-bg text-success border border-success-border'
+                                : exec.status === 'rolled_back'
                                   ? 'bg-surface-raised text-muted border border-border'
                                   : 'bg-accent-soft text-accent border border-accent-border'
-                              }`}
+                                }`}
                             >
                               {exec.dry_run ? 'DRY RUN' : exec.status.toUpperCase()}
                             </span>
@@ -381,20 +379,18 @@ export default function ResponseCenterPage() {
                 <div
                   key={pb.id}
                   onClick={() => setSelectedPlaybook(pb)}
-                  className={`p-3 transition-colors cursor-pointer hover:bg-surface-hover ${
-                    selectedPlaybook?.id === pb.id ? 'bg-surface-raised' : ''
-                  }`}
+                  className={`p-3 transition-colors cursor-pointer hover:bg-surface-hover ${selectedPlaybook?.id === pb.id ? 'bg-surface-raised' : ''
+                    }`}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-mono text-[11px] text-accent font-semibold">{pb.id}</span>
                     <span
-                      className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
-                        pb.risk_level === 'low'
-                          ? 'bg-surface text-muted border border-border'
-                          : pb.risk_level === 'medium'
+                      className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${pb.risk_level === 'low'
+                        ? 'bg-surface text-muted border border-border'
+                        : pb.risk_level === 'medium'
                           ? 'bg-sev-medium-bg text-sev-medium border border-sev-medium-border'
                           : 'bg-sev-critical-bg text-sev-critical border border-sev-critical-border'
-                      }`}
+                        }`}
                     >
                       {pb.risk_level} RISK
                     </span>
@@ -485,8 +481,8 @@ export default function ResponseCenterPage() {
               AI proposals are strictly bounded by these policies. No action executes autonomously unless permitted here.
             </small>
           </div>
-          <div className="table-wrap">
-            <table className="data-table">
+          <div className="soc-table-wrap">
+            <table className="soc-table">
               <thead>
                 <tr>
                   <th>Action Type</th>
@@ -504,22 +500,20 @@ export default function ResponseCenterPage() {
                     <td className="font-mono font-semibold text-[12px]">{titleCase(pol.action_type)}</td>
                     <td>
                       <span
-                        className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${
-                          pol.enabled
-                            ? 'bg-success-bg text-success border border-success-border'
-                            : 'bg-surface-raised text-muted border border-border'
-                        }`}
+                        className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${pol.enabled
+                          ? 'bg-success-bg text-success border border-success-border'
+                          : 'bg-surface-raised text-muted border border-border'
+                          }`}
                       >
                         {pol.enabled ? 'ENABLED' : 'DISABLED'}
                       </span>
                     </td>
                     <td>
                       <button
-                        className={`text-[11px] font-mono px-2 py-0.5 rounded border transition-colors ${
-                          pol.auto_execute
-                            ? 'bg-success-bg text-success border-success-border'
-                            : 'bg-surface-raised text-muted border-border'
-                        }`}
+                        className={`text-[11px] font-mono px-2 py-0.5 rounded border transition-colors ${pol.auto_execute
+                          ? 'bg-success-bg text-success border-success-border'
+                          : 'bg-surface-raised text-muted border-border'
+                          }`}
                         onClick={() => handleTogglePolicy(pol, 'auto_execute')}
                       >
                         {pol.auto_execute ? 'Auto Allowed' : 'Manual Only'}
@@ -527,11 +521,10 @@ export default function ResponseCenterPage() {
                     </td>
                     <td>
                       <button
-                        className={`text-[11px] font-mono px-2 py-0.5 rounded border transition-colors ${
-                          pol.requires_approval
-                            ? 'bg-sev-high-bg text-sev-high border-sev-high-border'
-                            : 'bg-surface-raised text-muted border-border'
-                        }`}
+                        className={`text-[11px] font-mono px-2 py-0.5 rounded border transition-colors ${pol.requires_approval
+                          ? 'bg-sev-high-bg text-sev-high border-sev-high-border'
+                          : 'bg-surface-raised text-muted border-border'
+                          }`}
                         onClick={() => handleTogglePolicy(pol, 'requires_approval')}
                       >
                         {pol.requires_approval ? 'Required' : 'Bypassed if Confidence Met'}
@@ -568,8 +561,8 @@ export default function ResponseCenterPage() {
               description="Actions taken via response playbooks will append records here automatically."
             />
           ) : (
-            <div className="table-wrap">
-              <table className="data-table">
+            <div className="soc-table-wrap">
+              <table className="soc-table">
                 <thead>
                   <tr>
                     <th>Audit ID</th>
@@ -601,11 +594,10 @@ export default function ResponseCenterPage() {
                       <td className="font-mono text-[11px]">{log.operator}</td>
                       <td>
                         <span
-                          className={`text-[10px] font-mono px-1 py-0.5 rounded ${
-                            log.dry_run
-                              ? 'bg-surface-raised text-muted border border-border'
-                              : 'bg-success-bg text-success border border-success-border'
-                          }`}
+                          className={`text-[10px] font-mono px-1 py-0.5 rounded ${log.dry_run
+                            ? 'bg-surface-raised text-muted border border-border'
+                            : 'bg-success-bg text-success border border-success-border'
+                            }`}
                         >
                           {log.dry_run ? 'DRY RUN' : 'EXECUTED'}
                         </span>

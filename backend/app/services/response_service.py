@@ -24,6 +24,7 @@ class ResponseService:
         self.playbooks: Dict[str, ResponsePlaybook] = self._init_playbooks()
         self.policies: Dict[ActionType, ResponsePolicy] = self._init_policies()
         self.executions: Dict[str, ResponseExecutionRecord] = {}
+        self.proposals: Dict[str, ResponseProposal] = {}
         self.audit_log: List[ResponseAuditEntry] = []
         # Containment state tracking for idempotency & rollback
         self.blocked_ips: Dict[str, Dict[str, Any]] = {}
@@ -402,7 +403,7 @@ class ResponseService:
             "verification_steps": playbook.verification_steps if playbook else ["Rule status check"]
         }
 
-        return ResponseProposal(
+        proposal = ResponseProposal(
             incident_id=str(getattr(incident, "id", "")),
             classification=classification,
             confidence=confidence,
@@ -417,6 +418,9 @@ class ResponseService:
             policy_evaluation=policy_eval,
             dry_run_preview=dry_run_preview
         )
+        if proposal.incident_id:
+            self.proposals[proposal.incident_id] = proposal
+        return proposal
 
     def execute_action(
         self,
@@ -596,3 +600,35 @@ class ResponseService:
             "execution_id": execution_id,
             "rollback": rollback_details
         }
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Compute real, backend-derived defensive response metrics."""
+        executions_list = list(self.executions.values())
+        total_executions = len(executions_list)
+        verified_count = sum(1 for e in executions_list if e.status == ExecutionStatus.VERIFIED or (e.status == ExecutionStatus.EXECUTED and e.verification_result and e.verification_result.get("verified")))
+        failed_count = sum(1 for e in executions_list if e.status == ExecutionStatus.FAILED)
+        awaiting_approval_count = sum(1 for e in executions_list if e.status == ExecutionStatus.PENDING_APPROVAL)
+        automated_executions = sum(1 for e in executions_list if e.approved_by == "policy_engine" or (e.requested_by == "response_agent" and not e.dry_run and e.status in [ExecutionStatus.EXECUTED, ExecutionStatus.VERIFIED]))
+        active_policies = sum(1 for p in self.policies.values() if p.enabled)
+        auto_execute_policies = sum(1 for p in self.policies.values() if p.enabled and p.auto_execute)
+        proposals_count = len(self.proposals)
+
+        return {
+            "response_proposals": proposals_count,
+            "automated_executions": automated_executions,
+            "actions_awaiting_approval": awaiting_approval_count,
+            "verified_actions": verified_count,
+            "failed_actions": failed_count,
+            "total_executions": total_executions,
+            "active_response_policies": active_policies,
+            "auto_execute_policies": auto_execute_policies,
+            "total_playbooks": len(self.playbooks),
+            "response_agent_status": "operational",
+            "active_containments": {
+                "blocked_ips": len(self.blocked_ips),
+                "disabled_accounts": len(self.disabled_accounts),
+                "isolated_endpoints": len(self.isolated_endpoints),
+                "applied_mitigations": len(self.applied_mitigations)
+            }
+        }
+
