@@ -15,6 +15,7 @@ from app.models.database import (
     Incident as IncidentDB,
 )
 from app.services.recurrence_service import RecurrenceService
+from app.services.incident_report_service import IncidentReportService
 from app.models.schemas import (
     Alert as AlertSchema,
     Incident as IncidentSchema,
@@ -164,6 +165,28 @@ async def get_incident_mitre(
         "total": len(techniques),
         "techniques": techniques,
     }
+
+
+@router.get("/{incident_id}/report")
+async def get_incident_report(
+    incident_id: str,
+    generated_by: str = "ThreatLens Analyst",
+    db: Session = Depends(get_db),
+):
+    """Build a deterministic incident report from stored ThreatLens evidence."""
+
+    report = IncidentReportService(db).build(
+        incident_id,
+        generated_by=generated_by,
+    )
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Incident not found",
+        )
+
+    return report
 
 
 # =============================================================================

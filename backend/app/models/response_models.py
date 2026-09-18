@@ -54,11 +54,31 @@ class VulnerabilityFinding(BaseModel):
 
     affected_port: Optional[int] = None
 
+    affected_product: Optional[str] = None
+
+    affected_versions: Optional[str] = None
+
     evidence: List[str] = Field(
         default_factory=list
     )
 
     remediation: Optional[str] = None
+
+    mitigation: Optional[str] = None
+
+    detection_method: Optional[str] = None
+
+    verification_method: Optional[str] = None
+
+    playbook_id: Optional[str] = None
+
+    auto_response_eligible: bool = False
+
+    approval_required: Optional[bool] = None
+
+    affected_assets: List[str] = Field(
+        default_factory=list
+    )
 
     references: List[str] = Field(
         default_factory=list

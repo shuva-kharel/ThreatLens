@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     protected_addresses: str = os.getenv(
         "PROTECTED_ADDRESSES", "127.0.0.1,::1"
     )
+    demo_lab_enabled: bool = os.getenv(
+        "DEMO_LAB_ENABLED", "true"
+    ).lower() in {"1", "true", "yes", "on"}
     demo_lab_assets: str = os.getenv("DEMO_LAB_ASSETS", "[]")
     demo_lab_max_duration_seconds: int = int(os.getenv("DEMO_LAB_MAX_DURATION_SECONDS", "60"))
     demo_lab_max_events: int = int(os.getenv("DEMO_LAB_MAX_EVENTS", "30"))

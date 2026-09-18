@@ -14,9 +14,18 @@ const nav = [
   { label: 'Alerts', href: '/alerts', icon: Bell }, { label: 'Events', href: '/events', icon: Activity },
   { label: 'Network', href: '/network', icon: Network }, { label: 'Threat Map', href: '/threat-map', icon: MapPinned },
   { label: 'Detection Rules', href: '/detections', icon: ListChecks }, { label: 'MITRE ATT&CK', href: '/mitre', icon: Crosshair },
-  { label: 'Simulator', href: '/simulator', icon: Play },
+  { label: 'Simulator', href: '/simulator', icon: Play }, { label: 'Settings', href: '/settings', icon: Settings },
 ]
 const RECENT_KEY = 'threatlens-recent-searches-v1'
+
+function notificationTitle(item: SearchResult | { label: string }) {
+  return titleCase(item.label).replace(/\s+/g, ' ').trim()
+}
+
+function notificationDetail(value?: string | null) {
+  if (!value) return ''
+  return value.replace(/->/g, '→').replace(/\s+-\s+$/g, '').replace(/\s+/g, ' ').trim()
+}
 
 export function ThreatLensShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname(); const router = useRouter()
@@ -77,7 +86,7 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
     <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
       <div className="brand-row"><Shield className="w-4 h-4 text-muted" /><strong>ThreatLens</strong><button className="icon-button mobile-close" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><X /></button></div>
       <p className="nav-label">Investigation</p><nav className="main-nav" aria-label="Primary navigation">{nav.map(({ label, href, icon: Icon }) => <Link key={href} className={`nav-item ${pathname === href || pathname.startsWith(`${href}/`) ? 'active' : ''}`} href={href} onClick={() => setSidebarOpen(false)}><Icon /><span>{label}</span></Link>)}</nav>
-      <div className="sidebar-bottom"><Link className={`nav-item ${pathname === '/settings' ? 'active' : ''}`} href="/settings"><Settings /><span>Settings</span></Link>
+      <div className="sidebar-bottom">
         <div className="connection-card"><span className="connection-dot" /><div><strong>{connected ? 'ThreatLens API Online' : 'ThreatLens API Offline'}</strong><small>{liveConnected ? 'WebSocket Live' : connected ? 'Reconnecting live stream' : 'Connecting...'}</small></div></div>
         <div className="theme-row"><span>Theme</span><select value={theme} onChange={(event) => selectTheme(event.target.value)} aria-label="Select appearance"><option value="dark">Dark (Zinc)</option><option value="light">Light</option><option value="contrast">High Contrast</option></select></div></div>
     </aside>
@@ -96,7 +105,11 @@ export function ThreatLensShell({ children }: { children: React.ReactNode }) {
           {!searching && !searchError && query.trim().length >= 2 && searchData?.total === 0 && <div className="command-state">No results for &quot;{query.trim()}&quot;.</div>}
           {groups.map(([group, items]) => <div className="command-group" key={group}><div className="command-group-label">{titleCase(group)} <span>{items.length}</span></div>{items.map((result) => { const index = flatResults.indexOf(result); return <button key={`${result.entity}:${result.id}`} className={index === selectedIndex ? 'selected' : ''} onMouseEnter={() => setSelectedIndex(index)} onClick={() => openResult(result)}><span><strong>{result.label}</strong><small>{result.detail}</small></span>{result.severity && <i>{String(result.severity).toUpperCase()}</i>}</button> })}</div>)}
         </div></section></div>}
-      {notificationsOpen && <div className="floating-panel notification-panel"><div className="notification-header"><span>Notifications</span><button onClick={markAllRead}>Mark all read</button></div>{notifications.length ? notifications.map((item) => <button key={item.id} className={item.read ? '' : 'unread'} onClick={() => { markRead(item.id); if (item.href) router.push(item.href); setNotificationsOpen(false) }}><span className="notification-category">{titleCase(item.category)}</span><strong>{item.label}</strong><small>{item.detail ? `${item.detail} - ` : ''}{formatDate(item.timestamp)}</small></button>) : <small className="command-state">No priority notifications.</small>}</div>}
+      {notificationsOpen && <div className="floating-panel notification-panel"><div className="notification-header"><span>Notifications</span><button onClick={markAllRead}>Mark all read</button></div><div className="notification-list">{notifications.length ? notifications.map((item) => {
+        const clickable = Boolean(item.href)
+        const content = <><span className="notification-topline"><span className={`read-dot ${item.read ? 'read' : ''}`} />{titleCase(item.category)}</span><strong>{notificationTitle(item)}</strong>{notificationDetail(item.detail) && <small>{notificationDetail(item.detail)}</small>}<time>{formatDate(item.timestamp)}</time></>
+        return clickable ? <button key={item.id} className={`notification-item ${item.read ? '' : 'unread'}`} onClick={() => { markRead(item.id); if (item.href) router.push(item.href); setNotificationsOpen(false) }}>{content}</button> : <div key={item.id} className={`notification-item ${item.read ? '' : 'unread'}`}>{content}</div>
+      }) : <small className="command-state">No priority notifications.</small>}</div></div>}
       <div className="content-wrap">{children}</div>
     </main>
   </div>

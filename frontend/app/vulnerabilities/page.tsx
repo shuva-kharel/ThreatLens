@@ -4,19 +4,27 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   RotateCw,
-  Bug,
-  Shield,
   ExternalLink,
-  CheckCircle,
-  FileText,
-  AlertTriangle,
-  Play,
   ArrowRight,
 } from 'lucide-react'
 import { api, type VulnerabilityFinding } from '@/lib/api'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { EmptyState, ErrorState, LoadingState } from '@/components/threatlens/ui'
-import { formatDate, titleCase } from '@/components/threatlens/format'
+
+const compact = (value?: string | null) => value?.trim() || '—'
+const descriptive = (value?: string | null) => value?.trim() || 'Not specified'
+
+function referenceLabel(ref: string, cveId?: string) {
+  try {
+    const url = new URL(ref)
+    if (url.hostname.includes('nvd.nist.gov') && cveId) return `NVD — ${cveId}`
+    if (url.hostname.includes('terrapin-attack.com')) return 'Terrapin Attack Advisory'
+    if (url.hostname.includes('qualys.com')) return 'Qualys Advisory'
+    return url.hostname.replace(/^www\./, '')
+  } catch {
+    return ref
+  }
+}
 
 export default function VulnerabilityCenterPage() {
   const [vulnerabilities, setVulnerabilities] = useState<VulnerabilityFinding[]>([])
@@ -99,7 +107,7 @@ export default function VulnerabilityCenterPage() {
 
         <article className="metric-card-clean">
           <strong>
-            {Array.from(new Set(vulnerabilities.flatMap((v) => v.affected_assets))).length}
+            {Array.from(new Set(vulnerabilities.flatMap((v) => v.affected_assets ?? []))).length}
           </strong>
           <span>Affected Internal Assets</span>
           <small>Observed across telemetry</small>
@@ -159,9 +167,9 @@ export default function VulnerabilityCenterPage() {
                         </span>
                       </td>
                       <td className="font-mono text-[11px]">
-                        <span className="px-1.5 py-0.5 rounded bg-surface-raised border border-border">
-                          {vuln.playbook_id}
-                        </span>
+                        {vuln.playbook_id?.trim() ? (
+                          <Link className="playbook-chip" href="/response">{vuln.playbook_id}</Link>
+                        ) : <span className="text-faint">—</span>}
                       </td>
                     </tr>
                   ))}
@@ -206,22 +214,20 @@ export default function VulnerabilityCenterPage() {
                 <div className="grid grid-cols-2 gap-3 py-3 border-y border-border">
                   <div>
                     <span className="text-muted text-[11px] block">Affected Product</span>
-                    <strong className="font-mono text-[11.5px]">{selectedVuln.affected_product}</strong>
+                    <strong className="font-mono text-[11.5px]">{compact(selectedVuln.affected_product)}</strong>
                   </div>
                   <div>
                     <span className="text-muted text-[11px] block">Affected Versions</span>
-                    <span className="font-mono text-[11px]">{selectedVuln.affected_versions}</span>
+                    <span className="font-mono text-[11px]">{compact(selectedVuln.affected_versions)}</span>
                   </div>
                   <div>
                     <span className="text-muted text-[11px] block">Associated Playbook</span>
-                    <span className="font-mono text-[11px] font-semibold text-accent">
-                      {selectedVuln.playbook_id}
-                    </span>
+                    {selectedVuln.playbook_id?.trim() ? <Link href="/response" className="playbook-chip mt-1">{selectedVuln.playbook_id}</Link> : <span className="font-mono text-[11px] text-faint">—</span>}
                   </div>
                   <div>
                     <span className="text-muted text-[11px] block">Approval Policy</span>
                     <span className="font-mono text-[11px]">
-                      {selectedVuln.approval_required ? 'Approval Required' : 'Auto-Response Allowed'}
+                      {selectedVuln.approval_required ? 'MANUAL APPROVAL REQUIRED' : selectedVuln.auto_response_eligible ? 'AUTO-RESPONSE ALLOWED' : 'Not specified'}
                     </span>
                   </div>
                 </div>
@@ -230,26 +236,22 @@ export default function VulnerabilityCenterPage() {
                   <h4 className="font-semibold text-muted text-[11px] uppercase tracking-wider mb-1">
                     Detection Method
                   </h4>
-                  <p className="font-mono text-[11.5px] text-text bg-surface-raised p-2 rounded border border-border">
-                    {selectedVuln.detection_method}
-                  </p>
+                  <p className="vuln-spec-text">{descriptive(selectedVuln.detection_method)}</p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-muted text-[11px] uppercase tracking-wider mb-1">
                     Direct Mitigation
                   </h4>
-                  <p className="font-mono text-[11.5px] text-text bg-surface-raised p-2 rounded border border-border">
-                    {selectedVuln.mitigation}
-                  </p>
+                  <p className="vuln-spec-text">{descriptive(selectedVuln.mitigation)}</p>
                 </div>
 
                 <div>
                   <h4 className="font-semibold text-muted text-[11px] uppercase tracking-wider mb-1">
                     Permanent Remediation
                   </h4>
-                  <p className="text-muted text-[11.5px]">
-                    {selectedVuln.remediation}
+                  <p className="vuln-spec-text">
+                    {descriptive(selectedVuln.remediation)}
                   </p>
                 </div>
 
@@ -257,8 +259,8 @@ export default function VulnerabilityCenterPage() {
                   <h4 className="font-semibold text-muted text-[11px] uppercase tracking-wider mb-1">
                     Verification Method
                   </h4>
-                  <p className="font-mono text-[11px] text-faint">
-                    {selectedVuln.verification_method}
+                  <p className="vuln-spec-text">
+                    {descriptive(selectedVuln.verification_method)}
                   </p>
                 </div>
 
@@ -276,7 +278,7 @@ export default function VulnerabilityCenterPage() {
                             rel="noopener noreferrer"
                             className="text-accent underline font-mono text-[11px] flex items-center gap-1 hover:text-text"
                           >
-                            {ref} <ExternalLink className="w-3 h-3" />
+                            {referenceLabel(ref, selectedVuln.cve_id)} <ExternalLink className="w-3 h-3" />
                           </a>
                         </li>
                       ))}

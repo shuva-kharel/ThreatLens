@@ -46,16 +46,52 @@ class RunRequest(BaseModel):
 
 
 def configured_assets() -> list[dict[str, str]]:
+    if not settings.demo_lab_enabled:
+        return []
+    raw = (settings.demo_lab_assets or "").strip()
+    if not raw or raw == "[]":
+        return []
     try:
-        assets = json.loads(settings.demo_lab_assets)
+        assets = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("DEMO_LAB_ASSETS is invalid JSON") from exc
+        if raw.startswith("[") or raw.startswith("{"):
+            raise RuntimeError("DEMO_LAB_ASSETS is invalid JSON") from exc
+        assets = [
+            {
+                "id": f"LAB-{index:02d}",
+                "hostname": f"LAB-{index:02d}",
+                "name": f"Lab Asset {index}",
+                "ip": item.strip(),
+                "address": item.strip(),
+                "os": "Unknown",
+                "type": "unknown",
+            }
+            for index, item in enumerate(raw.split(","), start=1)
+            if item.strip()
+        ]
+    if isinstance(assets, dict):
+        assets = [assets]
     valid = []
     for asset in assets:
-        address = ipaddress.ip_address(asset["ip"])
+        address_value = asset.get("ip") or asset.get("address")
+        if not address_value:
+            raise RuntimeError("Demo asset requires an ip or address field")
+        address = ipaddress.ip_address(address_value)
         if not address.is_private or address.is_loopback or address.is_link_local:
             raise RuntimeError(f"Demo asset {asset.get('id')} must use a private lab address")
-        valid.append(asset)
+        identifier = asset.get("id") or asset.get("hostname") or str(address)
+        hostname = asset.get("hostname") or asset.get("name") or identifier
+        os_name = asset.get("os") or asset.get("type") or "Unknown"
+        valid.append({
+            **asset,
+            "id": identifier,
+            "name": asset.get("name") or hostname,
+            "hostname": hostname,
+            "ip": str(address),
+            "address": str(address),
+            "os": os_name,
+            "type": asset.get("type") or os_name,
+        })
     return valid
 
 
@@ -186,6 +222,40 @@ async def execute_run(run_id: str):
 def assets(db: Session = Depends(get_db)):
     agents = {agent.hostname: AgentService(db).serialize_agent(agent) for agent in db.query(EndpointAgent).all()}
     return [{**asset, "agent": agents.get(asset["hostname"])} for asset in configured_assets()]
+
+
+@router.get("/status")
+def status(db: Session = Depends(get_db)):
+    configuration_error = None
+    try:
+        configured = configured_assets()
+    except RuntimeError as exc:
+        configured = []
+        configuration_error = str(exc)
+    assets = [
+        {
+            "id": asset["id"],
+            "name": asset.get("name") or asset["hostname"],
+            "address": asset["ip"],
+            "type": asset.get("type") or asset.get("os") or "unknown",
+            "hostname": asset["hostname"],
+            "ip": asset["ip"],
+            "os": asset.get("os") or "Unknown",
+        }
+        for asset in configured
+    ]
+    return {
+        "enabled": settings.demo_lab_enabled,
+        "configured": bool(assets),
+        "assets": assets,
+        "simulation_available": True,
+        "configuration_error": configuration_error,
+        "configuration": {
+            "required": "DEMO_LAB_ASSETS",
+            "example": "192.168.50.20,192.168.50.21",
+            "restart_required": True,
+        },
+    }
 
 
 @router.get("/scenarios")

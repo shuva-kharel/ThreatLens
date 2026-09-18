@@ -140,11 +140,48 @@ async def test_emergency_stop_is_cooperative(demo_db):
 
 
 def test_invalid_target_and_concurrency_are_rejected(demo_db, monkeypatch):
-    monkeypatch.setattr(asyncio, "create_task", lambda coroutine: coroutine.close())
     with TestClient(app) as client:
         invalid = client.post("/api/v1/demo-lab/runs", json={"asset_id": "INTERNET", "scenario": "full-attack"})
         assert invalid.status_code == 400
-        first = client.post("/api/v1/demo-lab/runs", json={"asset_id": ASSET["id"], "scenario": "full-attack"})
-        assert first.status_code == 202
+        active = DemoRun(
+            scenario="full-attack", asset_id=ASSET["id"], target_host=ASSET["hostname"],
+            target_ip=ASSET["ip"], source_ip="10.10.10.99", status="queued",
+            pipeline={key: "pending" for key in demo_lab.PIPELINE_KEYS}, log=[],
+        )
+        demo_db.add(active)
+        demo_db.commit()
         second = client.post("/api/v1/demo-lab/runs", json={"asset_id": ASSET["id"], "scenario": "port-scan"})
         assert second.status_code == 409
+
+
+def test_demo_lab_status_when_no_assets_configured(demo_db, monkeypatch):
+    monkeypatch.setattr(settings, "demo_lab_assets", "[]")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/demo-lab/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enabled"] is True
+    assert data["configured"] is False
+    assert data["assets"] == []
+    assert data["simulation_available"] is True
+
+
+def test_demo_lab_accepts_comma_separated_private_allowlist(demo_db, monkeypatch):
+    monkeypatch.setattr(settings, "demo_lab_assets", "192.168.50.20,192.168.50.21")
+    with TestClient(app) as client:
+        status = client.get("/api/v1/demo-lab/status")
+        assets = client.get("/api/v1/demo-lab/assets")
+    assert status.status_code == 200
+    assert status.json()["configured"] is True
+    assert [item["address"] for item in status.json()["assets"]] == ["192.168.50.20", "192.168.50.21"]
+    assert assets.status_code == 200
+    assert assets.json()[0]["ip"] == "192.168.50.20"
+
+
+def test_demo_lab_rejects_public_allowlist_address(demo_db, monkeypatch):
+    monkeypatch.setattr(settings, "demo_lab_assets", "8.8.8.8")
+    with TestClient(app) as client:
+        response = client.get("/api/v1/demo-lab/status")
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+    assert "private lab address" in response.json()["configuration_error"]

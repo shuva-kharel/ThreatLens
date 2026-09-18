@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { formatDate, formatTime, titleCase } from '@/components/threatlens/format'
 import { ThreatLensShell } from '@/components/threatlens/shell'
 import { EmptyState, ErrorState, LoadingState } from '@/components/threatlens/ui'
-import { api, type DemoAsset, type DemoRun, type DemoScenario } from '@/lib/api'
+import { api, type DemoAsset, type DemoLabStatus, type DemoRun, type DemoScenario } from '@/lib/api'
 
 const pipelineLabels: Record<string, string> = {
   telemetry: 'Telemetry received', detection: 'Detection fired', alert: 'Alert generated',
@@ -19,9 +19,11 @@ const pipelineLabels: Record<string, string> = {
 
 export default function DemoLabPage() {
   const [assets, setAssets] = useState<DemoAsset[]>([])
+  const [labStatus, setLabStatus] = useState<DemoLabStatus | null>(null)
   const [scenarios, setScenarios] = useState<DemoScenario[]>([])
   const [assetId, setAssetId] = useState('')
   const [scenario, setScenario] = useState('full-attack')
+  const [mode, setMode] = useState<'simulation' | 'lab'>('simulation')
   const [run, setRun] = useState<DemoRun | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +32,8 @@ export default function DemoLabPage() {
     setLoading(true)
     setError(null)
     try {
-      const [assetData, scenarioData] = await Promise.all([api.demoAssets(), api.demoScenarios()])
+      const [statusData, assetData, scenarioData] = await Promise.all([api.demoLabStatus(), api.demoAssets(), api.demoScenarios()])
+      setLabStatus(statusData)
       setAssets(assetData)
       setScenarios(scenarioData)
       setAssetId((current) => current || assetData[0]?.id || '')
@@ -58,13 +61,41 @@ export default function DemoLabPage() {
   }, [run])
 
   const start = async (selectedScenario = scenario) => {
-    if (!assetId) return
     setError(null)
     try {
       setScenario(selectedScenario)
+      if (mode === 'simulation') {
+        const status = await api.runFullAttack()
+        const generatedAt = status.started_at ?? status.completed_at ?? new Date().toISOString()
+        setRun({
+          id: `simulation-${generatedAt}`,
+          scenario: selectedScenario,
+          asset_id: 'controlled-simulation',
+          target_host: 'synthetic-target',
+          target_ip: 'synthetic',
+          source_ip: '10.10.10.99',
+          status: status.status ?? 'completed',
+          safety_mode: 'controlled_simulation',
+          stop_requested: false,
+          events_sent: status.events_sent ?? 0,
+          alerts_created: status.alerts_created ?? 0,
+          incident_id: null,
+          pipeline: Object.fromEntries(Object.keys(pipelineLabels).map((key) => [key, 'complete'])),
+          log: [{ timestamp: new Date().toISOString(), stage: 'SIMULATION', message: status.message ?? 'Controlled synthetic telemetry submitted to ThreatLens.' }],
+          error: null,
+          created_at: generatedAt,
+          started_at: status.started_at ?? generatedAt,
+          completed_at: status.completed_at ?? generatedAt,
+        })
+        return
+      }
+      if (!assetId) {
+        setError('Select a configured isolated lab asset before running lab mode.')
+        return
+      }
       setRun(await api.startDemoRun(assetId, selectedScenario))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to start Demo Lab scenario.')
+      setError(err instanceof Error ? err.message : 'Unable to start simulator scenario.')
     }
   }
 
@@ -88,27 +119,41 @@ export default function DemoLabPage() {
       </section>
 
       {error && <ErrorState error={error} retry={loadConfiguration} />}
-      {loading ? <LoadingState label="Loading controlled lab assets..." /> : !assets.length ? (
-        <EmptyState title="No lab assets configured" description="Configure DEMO_LAB_ASSETS on the backend before running scenarios." />
-      ) : (
+      {loading ? <LoadingState label="Loading simulator configuration..." /> : (
         <div className="dashboard-grid">
           <div className="space-y-3">
             <article className="panel">
-              <div className="panel-header"><h2>Controlled Target</h2></div>
-              <div className="p-4 space-y-3">
-                <label className="block text-[11px] text-muted">Target
-                  <select className="block w-full mt-1" value={assetId} onChange={(event) => setAssetId(event.target.value)} disabled={Boolean(active)}>
-                    {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.hostname} ({asset.ip})</option>)}
-                  </select>
+              <div className="panel-header"><h2>Mode</h2></div>
+              <div className="p-3 space-y-2">
+                <label className={`mode-option ${mode === 'simulation' ? 'active' : ''}`}>
+                  <input type="radio" checked={mode === 'simulation'} onChange={() => setMode('simulation')} />
+                  <span><strong>Controlled Simulation</strong><small>Generates controlled security telemetry and processes it through the real ThreatLens detection, correlation, and investigation pipeline.</small></span>
                 </label>
-                <div className="prop-list">
-                  <div className="prop-row"><span>Agent status</span><strong>{selectedAsset?.agent?.status ?? 'NOT REGISTERED'}</strong></div>
-                  <div className="prop-row"><span>Operating system</span><strong>{selectedAsset?.os}</strong></div>
-                  <div className="prop-row"><span>Safety mode</span><strong>SYNTHETIC TELEMETRY</strong></div>
-                  <div className="prop-row"><span>Duration limit</span><strong>Backend controlled</strong></div>
-                </div>
+                <label className={`mode-option ${mode === 'lab' ? 'active' : ''}`}>
+                  <input type="radio" checked={mode === 'lab'} onChange={() => setMode('lab')} />
+                  <span><strong>Isolated Demo Lab</strong><small>Runs bounded scenarios only against explicitly configured private lab assets.</small></span>
+                </label>
               </div>
             </article>
+
+            {mode === 'lab' && <article className="panel">
+              <div className="panel-header"><h2>Isolated Demo Lab</h2></div>
+              <div className="p-4 space-y-3">
+                {assets.length ? <>
+                  <label className="block text-[11px] text-muted">Target
+                    <select className="block w-full mt-1" value={assetId} onChange={(event) => setAssetId(event.target.value)} disabled={Boolean(active)}>
+                      {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.hostname} ({asset.ip})</option>)}
+                    </select>
+                  </label>
+                  <div className="prop-list">
+                    <div className="prop-row"><span>Agent status</span><strong>{selectedAsset?.agent?.status ?? 'NOT REGISTERED'}</strong></div>
+                    <div className="prop-row"><span>Operating system</span><strong>{selectedAsset?.os}</strong></div>
+                    <div className="prop-row"><span>Safety mode</span><strong>ALLOWLISTED LAB TELEMETRY</strong></div>
+                    <div className="prop-row"><span>Duration limit</span><strong>Backend controlled</strong></div>
+                  </div>
+                </> : <EmptyState title="No isolated lab assets configured" description="Controlled Simulation is still available. Configure allowed lab assets in the ThreatLens backend to enable isolated lab scenarios." />}
+              </div>
+            </article>}
 
             <article className="panel">
               <div className="panel-header"><h2>Scenarios</h2></div>
@@ -118,6 +163,18 @@ export default function DemoLabPage() {
                     <span>{item.name}</span><span className="font-mono text-[10px]">{item.event_count} bounded events</span>
                   </button>
                 ))}
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-header"><h2>Demo Lab Setup</h2><span className="font-mono text-[10px]">{labStatus?.configured ? 'Configured' : 'Not Configured'}</span></div>
+              <div className="prop-list">
+                <div className="prop-row"><span>Controlled Simulation</span><strong>AVAILABLE</strong></div>
+                <div className="prop-row"><span>Isolated Lab Execution</span><strong>{labStatus?.configured ? 'AVAILABLE' : 'UNAVAILABLE'}</strong></div>
+                <div className="prop-row"><span>Required backend configuration</span><strong>{labStatus?.configuration.required ?? 'DEMO_LAB_ASSETS'}</strong></div>
+                <div className="prop-row"><span>Example</span><strong>{labStatus?.configuration.example ?? '192.168.50.20,192.168.50.21'}</strong></div>
+                <div className="prop-row"><span>Restart required</span><strong>{labStatus?.configuration.restart_required ? 'Yes' : 'No'}</strong></div>
+                {labStatus?.configuration_error && <div className="prop-row"><span>Configuration issue</span><strong>{labStatus.configuration_error}</strong></div>}
               </div>
             </article>
           </div>
@@ -153,8 +210,8 @@ export default function DemoLabPage() {
               </div>
             </article>
 
-            {!active && assets.length > 0 && (
-              <button className="secondary-button w-full justify-center" onClick={() => start()}><Play className="w-3.5 h-3.5 mr-1" />Run Selected Scenario</button>
+            {!active && (mode === 'simulation' || assets.length > 0) && (
+              <button className="secondary-button w-full justify-center" onClick={() => start()}><Play className="w-3.5 h-3.5 mr-1" />Run {mode === 'simulation' ? 'Controlled Simulation' : 'Selected Scenario'}</button>
             )}
           </div>
         </div>

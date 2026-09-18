@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Download,
@@ -48,6 +48,7 @@ import {
 
 export default function IncidentInvestigationPage() {
   const params = useParams();
+  const router = useRouter();
   const id =
     typeof params?.id === "string"
       ? params.id
@@ -238,6 +239,14 @@ export default function IncidentInvestigationPage() {
                   <option value="false_positive">False Positive</option>
                 </select>
               </div>
+              <button
+                className="primary-button"
+                onClick={() => {
+                  router.push(`/incidents/${id}/report`);
+                }}
+              >
+                <FileText className="w-3.5 h-3.5 mr-1" /> Generate Report
+              </button>
               <button
                 className="secondary-button"
                 onClick={() =>

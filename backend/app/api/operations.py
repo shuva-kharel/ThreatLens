@@ -160,7 +160,8 @@ def recent_activity(limit: int = Query(default=50, ge=1, le=200), db: Session = 
     for alert in db.query(Alert).order_by(Alert.created_at.desc()).limit(limit).all():
         activity.append({"id": f"alert:{alert.id}", "type": "detection", "label": alert.alert_type, "detail": alert.description, "timestamp": utc_iso(alert.created_at), "severity": _value(alert.severity), "href": f"/incidents/{alert.incident_id}" if alert.incident_id else "/alerts", "stage": "detect"})
     for incident in db.query(Incident).order_by(Incident.updated_at.desc()).limit(limit).all():
-        activity.append({"id": f"incident:{incident.id}:{utc_iso(incident.updated_at)}", "type": "incident", "label": incident.title, "detail": f"{incident.id} - {_value(incident.status)}", "timestamp": utc_iso(incident.updated_at), "severity": _value(incident.severity), "href": f"/incidents/{incident.id}", "stage": "correlate"})
+        targets = ", ".join(incident.target_entities or [])
+        activity.append({"id": f"incident:{incident.id}:{utc_iso(incident.updated_at)}", "type": "incident", "label": incident.title, "detail": targets or _value(incident.status), "timestamp": utc_iso(incident.updated_at), "severity": _value(incident.severity), "href": f"/incidents/{incident.id}", "stage": "correlate"})
         if incident.mitre_techniques:
             activity.append({"id": f"trace:{incident.id}:{utc_iso(incident.updated_at)}", "type": "traceai", "label": "Attack path reconstructed", "detail": ", ".join(incident.mitre_techniques), "timestamp": utc_iso(incident.updated_at), "severity": _value(incident.severity), "href": f"/incidents/{incident.id}", "stage": "trace"})
     for response in db.query(Response).order_by(Response.created_at.desc()).limit(limit).all():
@@ -184,6 +185,7 @@ def recent_activity(limit: int = Query(default=50, ge=1, le=200), db: Session = 
             activity.append({"id": f"slack:{escalation.id}", "type": "slack", "label": f"Slack notification {escalation.slack_notification_status.lower()}", "detail": escalation.slack_notification_error, "timestamp": utc_iso(escalation.slack_notification_attempted_at or escalation.updated_at), "severity": "high" if escalation.slack_notification_status == "FAILED" else None, "href": "/response"})
     offline_cutoff = utc_now() - timedelta(minutes=2)
     for agent in db.query(EndpointAgent).filter(EndpointAgent.last_seen < offline_cutoff).order_by(EndpointAgent.last_seen.desc()).limit(limit).all():
-        activity.append({"id": f"agent_offline:{agent.id}:{utc_iso(agent.last_seen)}", "type": "agent_offline", "label": f"{agent.hostname} is offline", "detail": agent.id, "timestamp": utc_iso(agent.last_seen), "severity": "high", "href": "/settings"})
+        addresses = ", ".join(agent.ip_addresses or [])
+        activity.append({"id": f"agent_offline:{agent.id}:{utc_iso(agent.last_seen)}", "type": "agent_offline", "label": f"{agent.hostname} is offline", "detail": addresses or agent.os, "timestamp": utc_iso(agent.last_seen), "severity": "high", "href": "/settings"})
     activity.sort(key=lambda item: item["timestamp"] or "", reverse=True)
     return {"activity": activity[:limit], "generated_at": utc_iso(utc_now())}
